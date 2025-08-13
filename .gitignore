@@ -80,8 +80,14 @@ out
 
 # Nuxt.js build / generate output
 .nuxt
-dist
-
+dist/
+.dist/
+.build/
+.data/
+coverage/
+.vscode/
+.DS_Store
+.secrets/
 # Gatsby files
 .cache/
 # Comment in the public line in if your project uses Gatsby and not Next.js

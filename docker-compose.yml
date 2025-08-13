@@ -1,0 +1,38 @@
+version: "3.9"
+services:
+  postgres:
+    image: postgres:15
+    container_name: csms_postgres
+    environment:
+      POSTGRES_USER: csms
+      POSTGRES_PASSWORD: csms
+      POSTGRES_DB: csms
+    ports: ["5432:5432"]
+    volumes:
+      - ./.data/postgres:/var/lib/postgresql/data
+
+  mariadb:
+    image: mariadb:10.6
+    container_name: csms_mariadb
+    environment:
+      MARIADB_ROOT_PASSWORD: root
+      MARIADB_DATABASE: steve
+      MARIADB_USER: steve
+      MARIADB_PASSWORD: steve
+    ports: ["3306:3306"]
+    volumes:
+      - ./.data/mariadb:/var/lib/mysql
+
+  steve:
+    image: eclipse-temurin:17-jre
+    container_name: csms_steve
+    depends_on: [mariadb]
+    working_dir: /app
+    volumes:
+      - ./services/tools/steve:/app
+    command: ["java", "-jar", "steve.jar"]
+    environment:
+      STEVE_DB_URL: jdbc:mariadb://mariadb:3306/steve
+      STEVE_DB_USER: steve
+      STEVE_DB_PASS: steve
+    ports: ["8180:8180"]

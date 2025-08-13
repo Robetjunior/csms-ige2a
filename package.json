@@ -1,0 +1,23 @@
+{
+  "name": "csms-ige2a",
+  "author": "José Roberto Ferreira Junior",
+  "private": true,
+  "packageManager": "pnpm@10.14.0",
+  "version": "0.1.0",
+  "description": "",
+  "main": "index.js",
+  "workspaces": [
+    "services/*",
+    "services/tools/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "pnpm --filter orchestrator-api dev",
+    "dev:web": "pnpm --filter web-dashboard dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test"
+  },
+  "keywords": [],
+  "license": "ISC"
+}
