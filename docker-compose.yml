@@ -19,7 +19,7 @@ services:
       MARIADB_DATABASE: steve
       MARIADB_USER: steve
       MARIADB_PASSWORD: steve
-    ports: ["3306:3306"]
+    ports: ["3307:3306"]
     volumes:
       - ./.data/mariadb:/var/lib/mysql
 

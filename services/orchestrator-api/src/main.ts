@@ -1,11 +1,21 @@
-﻿import express from "express";
-import dotenv from "dotenv";
+﻿import express from 'express';
+import { checkPg, checkMaria } from './db';
 
-dotenv.config();
 const app = express();
-app.use(express.json());
 
-app.get("/health", (_req, res) => res.json({ ok: true }));
+app.get('/health', (_req, res) => {
+  res.json({ ok: true });
+});
 
-const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`[orchestrator] up on :${port}`));
+app.get('/db/health', async (_req, res) => {
+  try {
+    const [pgOk, mariaOk] = await Promise.all([checkPg(), checkMaria()]);
+    res.json({ postgres: pgOk ? 'up' : 'down', mariadb: mariaOk ? 'up' : 'down' });
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
+app.listen(3000, () => {
+  console.log('Orchestrator API rodando na porta 3000');
+});
