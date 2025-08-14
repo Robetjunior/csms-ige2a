@@ -1,0 +1,3 @@
+﻿transaction_pk	charge_box_id	id_tag	start_timestamp	stop_timestamp	stop_reason	duration_sec
+2	dr_bacana_charger_02	TESTE123	2025-07-14 09:38:33.000000	NULL	NULL	2691925
+1	dr_bacana_charger_02	TESTE123	2025-07-14 09:37:48.000000	NULL	NULL	2691970

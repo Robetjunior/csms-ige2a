@@ -1,4 +1,5 @@
 version: "3.9"
+
 services:
   postgres:
     image: postgres:15
@@ -7,9 +8,17 @@ services:
       POSTGRES_USER: csms
       POSTGRES_PASSWORD: csms
       POSTGRES_DB: csms
-    ports: ["5432:5432"]
+      TZ: America/Sao_Paulo
+    ports:
+      - "5433:5432"            # host 5433 -> container 5432
     volumes:
       - ./.data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U csms -d csms || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
 
   mariadb:
     image: mariadb:10.6
@@ -19,20 +28,80 @@ services:
       MARIADB_DATABASE: steve
       MARIADB_USER: steve
       MARIADB_PASSWORD: steve
-    ports: ["3307:3306"]
+      TZ: America/Sao_Paulo
+    ports:
+      - "3307:3306"            # host 3307 -> container 3306
     volumes:
       - ./.data/mariadb:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -usteve -p$MARIADB_PASSWORD -h 127.0.0.1 --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
 
   steve:
     image: eclipse-temurin:17-jre
     container_name: csms_steve
-    depends_on: [mariadb]
+    depends_on:
+      mariadb:
+        condition: service_healthy
     working_dir: /app
     volumes:
       - ./services/tools/steve:/app
-    command: ["java", "-jar", "steve.jar"]
+      - ./.logs/steve:/app/logs
+    command:
+      [
+        "java",
+        "-Duser.home=/app",
+        "-DLOG_DIR=/app/logs",
+        "-Dlogback.configurationFile=/app/logback.xml",
+        "-Dspring.config.location=/app/steve.properties",
+        "-Dsteve.config=/app/steve.properties",
+        "-Dsteve.config.location=/app/steve.properties",
+        "-cp","steve.jar:lib/*",
+        "de.rwth.idsg.steve.Application"
+      ]
     environment:
+      TZ: America/Sao_Paulo
       STEVE_DB_URL: jdbc:mariadb://mariadb:3306/steve
       STEVE_DB_USER: steve
       STEVE_DB_PASS: steve
-    ports: ["8180:8180"]
+    ports:
+      - "8180:8180"
+    restart: unless-stopped
+
+  orchestrator:
+    # Opção A (recomendada p/ dev): usar imagem Node e rodar npm install + dev
+    image: node:20-alpine
+    container_name: csms_orchestrator
+    working_dir: /app
+    volumes:
+      - ./services/orchestrator-api:/app
+    environment:
+      NODE_ENV: development
+      TZ: America/Sao_Paulo
+      PORT: 3000
+      # Dentro da rede do Compose:
+      POSTGRES_URI: postgresql://csms:csms@postgres:5432/csms
+      MARIADB_HOST: mariadb
+      MARIADB_PORT: 3306
+      MARIADB_USER: steve
+      MARIADB_PASSWORD: steve
+      MARIADB_DATABASE: steve
+      # Ajuste se houver front-end acessando a API:
+      CORS_ORIGIN: http://localhost:8180,http://localhost:3000
+    command: sh -c "npm install && npm run dev"
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
