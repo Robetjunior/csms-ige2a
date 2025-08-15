@@ -1,25 +1,9 @@
-// src/routes/events.ts
 import { Router, Request, Response } from 'express';
 import { insertEvento, upsertSessionStart, stopSession } from '../services/repo';
+import { OcppEventSchema } from '../validation/events';
 
 const router = Router();
 
-/**
- * POST /v1/ocpp/events
- * Aceita eventos OCPP normalizados:
- *  {
- *    "type": "StartTransaction" | "StopTransaction" | "StatusNotification" | ...,
- *    "transactionId": 123,
- *    "chargeBoxId": "CB-01",
- *    "idTag": "ABC123",
- *    "reason": "Remote",
- *    "timestamp": "2025-08-14T15:00:00Z",
- *    "payload": { ... },
- *    "eventId": "opcional-para-idempotencia"
- *  }
- *
- * Campos mínimos: type (string). Se não vier "payload", o body inteiro é salvo como payload.
- */
 router.post('/v1/ocpp/events', async (req: Request, res: Response) => {
   try {
     // 🔐 API Key opcional (apenas se ORCH_API_KEY estiver definida no ambiente)
@@ -31,18 +15,29 @@ router.post('/v1/ocpp/events', async (req: Request, res: Response) => {
       }
     }
 
-    const b = req.body ?? {};
-    const type = String(b.type || '').trim();
-    if (!type) return res.status(400).json({ error: 'type is required' });
+    // ✅ Validação com Zod (mensagens claras se algo vier inválido)
+    const parsed = OcppEventSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: 'invalid_payload',
+        details: parsed.error.issues.map(i => ({ path: i.path, message: i.message }))
+      });
+    }
 
-    const chargeBoxId = b.chargeBoxId ? String(b.changeBoxId ?? b.chargeBoxId) : null; // tolera "changeBoxId" por engano
+    const b = parsed.data;
+
+    // Pequena tolerância para quem errar o nome de chargeBoxId como "changeBoxId"
+    const rawChargeBoxId = (b as any).changeBoxId ?? b.chargeBoxId ?? null;
+
+    const type = String(b.type).trim();
     const transactionId = b.transactionId != null ? Number(b.transactionId) : null;
-    const idTag = b.idTag ? String(b.idTag) : null;
-    const reason = b.reason ? String(b.reason) : null;
+    const chargeBoxId = rawChargeBoxId != null ? String(rawChargeBoxId) : null;
+    const idTag = b.idTag != null ? String(b.idTag) : null;
+    const reason = b.reason != null ? String(b.reason) : null;
     const timestamp = b.timestamp ? new Date(b.timestamp) : new Date();
 
-    // Se vier payload, registra. Se não, salva o body inteiro.
-    const payload = b.payload ?? b;
+    // Se vier payload, registra; se não vier, salva o body inteiro
+    const payload = b.payload ?? (req.body ?? {});
 
     // 👉 Insere evento (idempotente). A unique_key é gerada no repositório.
     const result = await insertEvento({

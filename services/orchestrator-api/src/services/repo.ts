@@ -7,25 +7,44 @@ type InsertEventoArgs = {
   chargeBoxId: string | null;
   transactionId: number | null;
   idTag: string | null;
-  uniqueKey?: string; // opcional
+  uniqueKey?: string;
 };
 
 /**
- * Insere evento com idempotência via unique_key.
- * - Se payload tiver eventId/id, usa como unique_key; senão deriva de (type, tx, cb, timestamp arredondado).
- * - Retorna duplicate=true quando a unique_key já existia.
+ * Regras de idempotência:
+ *  1) Se houver eventId (ou id) no payload -> unique_key = "id:<eventId>"
+ *  2) Se for StartTransaction/StopTransaction e tiver transactionId -> unique_key = "t:<tipo>|tx:<tx>|cb:<cb>"
+ *  3) Caso contrário -> unique_key com timestamp arredondado ao segundo
  */
 export async function insertEvento(args: InsertEventoArgs): Promise<{ duplicate: boolean }> {
-  const { tipo, payload, chargeBoxId, transactionId, idTag, uniqueKey: providedKey } = args;
+  const { tipo, payload, chargeBoxId, idTag, uniqueKey: providedKey } = args;
 
+  // sanitize transactionId
+  const txIdRaw = args.transactionId;
+  const txId: number | null =
+    typeof txIdRaw === 'number' && Number.isFinite(txIdRaw) ? txIdRaw : null;
+
+  const isStartOrStop = (tipo === 'StartTransaction' || tipo === 'StopTransaction');
   const eventId = payload?.eventId ?? payload?.id ?? null;
-  const roundedTs = new Date(Math.floor(Date.now() / 1000) * 1000).toISOString();
 
-  const uniqueKey =
-    providedKey ||
-    (eventId
-      ? `id:${String(eventId)}`
-      : `t:${tipo}|tx:${transactionId ?? '-'}|cb:${chargeBoxId ?? '-'}|ts:${roundedTs}`);
+  const tsBase = payload?.timestamp ? new Date(payload.timestamp) : new Date();
+  const roundedTs = new Date(Math.floor(tsBase.getTime() / 1000) * 1000).toISOString();
+
+  let uniqueKey: string;
+  if (providedKey) {
+    uniqueKey = providedKey;
+  } else if (isStartOrStop && txId !== null) {
+    uniqueKey = `t:${tipo}|tx:${txId}|cb:${chargeBoxId ?? '-'}`;
+  } else if (eventId != null) {
+    uniqueKey = `id:${String(eventId)}`;
+  } else {
+    uniqueKey = `t:${tipo}|tx:${txId ?? '-'}|cb:${chargeBoxId ?? '-'}|ts:${roundedTs}`;
+  }
+
+  if ((process.env.NODE_ENV || '').toLowerCase() !== 'production') {
+    console.log('[repo.insertEvento] tipo=%s tx=%s cb=%s -> unique_key=%s',
+      tipo, String(txId ?? '-'), String(chargeBoxId ?? '-'), uniqueKey);
+  }
 
   const sql = `
     INSERT INTO public.eventos (tipo, payload, charge_box_id, transaction_id, id_tag, unique_key)
@@ -33,16 +52,13 @@ export async function insertEvento(args: InsertEventoArgs): Promise<{ duplicate:
     ON CONFLICT (unique_key) DO NOTHING
     RETURNING id;
   `;
-  const params = [tipo, JSON.stringify(payload), chargeBoxId, transactionId, idTag, uniqueKey];
+  const params = [tipo, JSON.stringify(payload), chargeBoxId, txId, idTag, uniqueKey];
 
   const r = await pg.query<{ id: number }>(sql, params);
-  const inserted = !!r.rowCount && r.rowCount > 0;
+  const inserted = (r.rowCount ?? 0) > 0;
   return { duplicate: !inserted };
 }
 
-/**
- * Abre/atualiza sessão consolidada no início da transação.
- */
 export async function upsertSessionStart(args: {
   transactionId: number;
   chargeBoxId?: string | null;
@@ -67,9 +83,6 @@ export async function upsertSessionStart(args: {
   ]);
 }
 
-/**
- * Finaliza sessão consolidada no fim da transação.
- */
 export async function stopSession(args: {
   transactionId: number;
   stoppedAt?: Date;
