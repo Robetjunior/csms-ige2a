@@ -4,7 +4,7 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "dev": "ts-node-dev --respawn --transpile-only --project tsconfig.json src/main.ts",
+    "dev": "ts-node-dev --respawn --transpile-only --poll --interval 300 src/main.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
     "lint": "echo lint",
@@ -14,11 +14,12 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "mariadb": "^3.4.5",
-    "pg": "^8.16.3"
+    "pg": "^8.16.3",
+    "zod": "^4.0.17"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
-    "@types/node": "^20.11.30",
+    "@types/node": "^20.19.11",
     "@types/pg": "^8.15.5",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.4.0"
