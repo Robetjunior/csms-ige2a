@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: csms
       POSTGRES_PASSWORD: csms
       POSTGRES_DB: csms
-      TZ: America/Sao_Paulo
+      TZ: UTC
     ports:
       - "5433:5432"            # host 5433 -> container 5432
     volumes:
@@ -28,9 +28,15 @@ services:
       MARIADB_DATABASE: steve
       MARIADB_USER: steve
       MARIADB_PASSWORD: steve
-      TZ: America/Sao_Paulo
+      TZ: UTC
+    command: [
+      "mysqld",
+      "--default-time-zone=+00:00",
+      "--character-set-server=utf8mb4",
+      "--collation-server=utf8mb4_unicode_ci"
+    ]
     ports:
-      - "3307:3306"            # host 3307 -> container 3306
+      - "3307:3306"
     volumes:
       - ./.data/mariadb:/var/lib/mysql
     healthcheck:
@@ -63,7 +69,7 @@ services:
         "de.rwth.idsg.steve.Application"
       ]
     environment:
-      TZ: America/Sao_Paulo
+      TZ: UTC
       STEVE_DB_URL: jdbc:mariadb://mariadb:3306/steve
       STEVE_DB_USER: steve
       STEVE_DB_PASS: steve
@@ -80,7 +86,7 @@ services:
       - ./services/orchestrator-api:/app
     environment:
       NODE_ENV: development
-      TZ: America/Sao_Paulo
+      TZ: UTC
       PORT: 3000
       # Dentro da rede do Compose:
       POSTGRES_URI: postgresql://csms:csms@postgres:5432/csms
