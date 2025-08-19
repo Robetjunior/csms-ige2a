@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:15
@@ -10,7 +8,7 @@ services:
       POSTGRES_DB: csms
       TZ: UTC
     ports:
-      - "5433:5432"           
+      - "5433:5432"
     volumes:
       - ./.data/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -29,12 +27,11 @@ services:
       MARIADB_USER: steve
       MARIADB_PASSWORD: steve
       TZ: UTC
-    command: [
-      "mysqld",
-      "--default-time-zone=+00:00",
-      "--character-set-server=utf8mb4",
-      "--collation-server=utf8mb4_unicode_ci"
-    ]
+    command:
+      - mysqld
+      - --default-time-zone=+00:00
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
     ports:
       - "3307:3306"
     volumes:
@@ -57,17 +54,16 @@ services:
       - ./services/tools/steve:/app
       - ./.logs/steve:/app/logs
     command:
-      [
-        "java",
-        "-Duser.home=/app",
-        "-DLOG_DIR=/app/logs",
-        "-Dlogback.configurationFile=/app/logback.xml",
-        "-Dspring.config.location=/app/steve.properties",
-        "-Dsteve.config=/app/steve.properties",
-        "-Dsteve.config.location=/app/steve.properties",
-        "-cp","steve.jar:lib/*",
-        "de.rwth.idsg.steve.Application"
-      ]
+      - java
+      - -Duser.home=/app
+      - -DLOG_DIR=/app/logs
+      - -Dlogback.configurationFile=/app/logback.xml
+      - -Dspring.config.location=/app/steve.properties
+      - -Dsteve.config=/app/steve.properties
+      - -Dsteve.config.location=/app/steve.properties
+      - -cp
+      - steve.jar:lib/*
+      - de.rwth.idsg.steve.Application
     environment:
       TZ: UTC
       STEVE_DB_URL: jdbc:mariadb://mariadb:3306/steve
@@ -78,28 +74,40 @@ services:
     restart: unless-stopped
 
   orchestrator:
-  build:
-    context: ./services/orchestrator-api
-    dockerfile: Dockerfile
-  environment:
-    TZ: UTC
-    PORT: 3000
-    NODE_ENV: production
-    POSTGRES_URI: postgresql://csms:csms@postgres:5432/csms
-    MARIADB_HOST: mariadb
-    MARIADB_PORT: 3306
-    MARIADB_USER: steve
-    MARIADB_PASSWORD: steve
-    MARIADB_DATABASE: steve
-  ports: ["3000:3000"]
-  depends_on:
-    postgres:
-      condition: service_healthy
-    mariadb:
-      condition: service_healthy
-  healthcheck:
-    test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
-    interval: 10s
-    timeout: 3s
-    retries: 20
-  restart: unless-stopped
+    image: node:20-alpine
+    container_name: csms_orchestrator
+    working_dir: /app
+    # Monta o código-fonte, mas mantém node_modules dentro do container
+    volumes:
+      - ./services/orchestrator-api:/app
+      - /app/node_modules
+    environment:
+      NODE_ENV: development
+      TZ: UTC
+      PORT: "3000"
+      POSTGRES_URI: postgresql://csms:csms@postgres:5432/csms
+      MARIADB_HOST: mariadb
+      MARIADB_PORT: "3306"
+      MARIADB_USER: steve
+      MARIADB_PASSWORD: steve
+      MARIADB_DATABASE: steve
+      # opcional: CORS para front-ends locais
+      CORS_ORIGIN: "http://localhost:8180,http://localhost:3000"
+    command: >
+      sh -lc "corepack enable &&
+              corepack prepare pnpm@10.14.0 --activate &&
+              pnpm install &&
+              pnpm dev"
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped

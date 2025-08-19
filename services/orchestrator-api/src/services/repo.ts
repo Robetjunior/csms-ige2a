@@ -190,12 +190,21 @@ export async function listEvents(args: {
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
   const sql = `
-    SELECT id, created_at, source, event_type, charge_box_id, connector_pk, transaction_pk, id_tag, payload
-      FROM public.events
-      ${whereSql}
-      ORDER BY created_at ${sort}
-      LIMIT $${i++}
-      OFFSET $${i++}
+    SELECT
+      id,
+      created_at,
+      source,
+      event_type,
+      charge_box_id,
+      (connector_pk)::int AS connector_pk,
+      (transaction_pk)::int AS transaction_pk,
+      id_tag,
+      payload
+    FROM public.events
+    ${whereSql}
+    ORDER BY created_at ${sort}
+    LIMIT $${i++}
+    OFFSET $${i++}
   `;
   params.push(limit, offset);
 
