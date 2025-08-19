@@ -10,7 +10,7 @@ services:
       POSTGRES_DB: csms
       TZ: UTC
     ports:
-      - "5433:5432"            # host 5433 -> container 5432
+      - "5433:5432"           
     volumes:
       - ./.data/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -78,36 +78,28 @@ services:
     restart: unless-stopped
 
   orchestrator:
-    # Opção A (recomendada p/ dev): usar imagem Node e rodar npm install + dev
-    image: node:20-alpine
-    container_name: csms_orchestrator
-    working_dir: /app
-    volumes:
-      - ./services/orchestrator-api:/app
-    environment:
-      NODE_ENV: development
-      TZ: UTC
-      PORT: 3000
-      # Dentro da rede do Compose:
-      POSTGRES_URI: postgresql://csms:csms@postgres:5432/csms
-      MARIADB_HOST: mariadb
-      MARIADB_PORT: 3306
-      MARIADB_USER: steve
-      MARIADB_PASSWORD: steve
-      MARIADB_DATABASE: steve
-      # Ajuste se houver front-end acessando a API:
-      CORS_ORIGIN: http://localhost:8180,http://localhost:3000
-    command: sh -lc "corepack enable && corepack prepare pnpm@10.14.0 --activate && pnpm install && pnpm dev"
-    ports:
-      - "3000:3000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      mariadb:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ready || exit 1"]
-      interval: 10s
-      timeout: 3s
-      retries: 20
-    restart: unless-stopped
+  build:
+    context: ./services/orchestrator-api
+    dockerfile: Dockerfile
+  environment:
+    TZ: UTC
+    PORT: 3000
+    NODE_ENV: production
+    POSTGRES_URI: postgresql://csms:csms@postgres:5432/csms
+    MARIADB_HOST: mariadb
+    MARIADB_PORT: 3306
+    MARIADB_USER: steve
+    MARIADB_PASSWORD: steve
+    MARIADB_DATABASE: steve
+  ports: ["3000:3000"]
+  depends_on:
+    postgres:
+      condition: service_healthy
+    mariadb:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+    interval: 10s
+    timeout: 3s
+    retries: 20
+  restart: unless-stopped

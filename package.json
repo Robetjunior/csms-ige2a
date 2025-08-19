@@ -16,7 +16,9 @@
     "dev:web": "pnpm --filter web-dashboard dev",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "dev": "ts-node-dev --respawn --transpile-only --poll --interval 300 src/main.ts",
+    "test": "jest --runInBand"
   },
   "keywords": [],
   "license": "ISC"

@@ -1,11 +1,10 @@
 // services/orchestrator-api/src/db.ts
 import dotenv from 'dotenv';
-dotenv.config(); // garante carregar .env mesmo se este módulo for avaliado antes do main.ts
+dotenv.config();
 
 import { Pool as PgPool } from 'pg';
-import mariadb from 'mariadb';
+import mariadb, { Pool as MariaPool } from 'mariadb';
 
-// --- resolver envs (com defaults seguros p/ dev) ---
 const POSTGRES_URI = process.env.POSTGRES_URI || 'postgresql://csms:csms@localhost:5432/csms';
 
 const MARIADB_HOST = process.env.MARIADB_HOST || '127.0.0.1';
@@ -14,44 +13,42 @@ const MARIADB_USER = process.env.MARIADB_USER || 'steve';
 const MARIADB_PASSWORD = process.env.MARIADB_PASSWORD || 'steve';
 const MARIADB_DATABASE = process.env.MARIADB_DATABASE || 'steve';
 
-// --- logar envs (sem expor segredos) apenas uma vez ---
 let envLogged = false;
 function logDbEnvOnce() {
   if (envLogged) return;
   envLogged = true;
-  const isProd = (process.env.NODE_ENV || '').toLowerCase() === 'production';
-
-  // NÃO logar senha nunca
   console.log('[db.env] POSTGRES_URI:', POSTGRES_URI.replace(/:[^:@/]+@/, ':***@'));
   console.log('[db.env] MARIADB:', {
     host: MARIADB_HOST,
     port: MARIADB_PORT,
     user: MARIADB_USER,
     database: MARIADB_DATABASE,
-    // password: MARIADB_PASSWORD, // nunca logar
     nodeEnv: process.env.NODE_ENV || 'undefined'
   });
-
-  if (isProd) {
-    console.log('[db.env] (produção) logs de env reduzidos.');
-  }
 }
 logDbEnvOnce();
 
-// --- pools ---
+// --- Postgres pool (sempre precisamos) ---
 export const pg = new PgPool({ connectionString: POSTGRES_URI });
 
-export const mdbPool = mariadb.createPool({
-  host: MARIADB_HOST,
-  port: MARIADB_PORT,
-  user: MARIADB_USER,
-  password: MARIADB_PASSWORD,
-  database: MARIADB_DATABASE,
-  connectionLimit: 5,
-  acquireTimeout: 15000,
-  connectTimeout: 8000,
-  socketTimeout: 8000
-});
+// --- MariaDB pool (lazy) ---
+let _mdbPool: MariaPool | null = null;
+export function getMariaPool(): MariaPool {
+  if (!_mdbPool) {
+    _mdbPool = mariadb.createPool({
+      host: MARIADB_HOST,
+      port: MARIADB_PORT,
+      user: MARIADB_USER,
+      password: MARIADB_PASSWORD,
+      database: MARIADB_DATABASE,
+      connectionLimit: 5,
+      acquireTimeout: 15000,
+      connectTimeout: 8000,
+      socketTimeout: 8000,
+    });
+  }
+  return _mdbPool;
+}
 
 // --- health checks ---
 export async function checkPg() {
@@ -59,13 +56,12 @@ export async function checkPg() {
   return res.rows[0]?.ok === 1;
 }
 
-// retry simples para cold start do container
 export async function checkMaria(retries = 2): Promise<boolean> {
   let lastErr: any;
   for (let i = 0; i <= retries; i++) {
     let conn;
     try {
-      conn = await mdbPool.getConnection();
+      conn = await getMariaPool().getConnection();
       const rows = await conn.query('select 1 as ok');
       return rows?.[0]?.ok === 1 || rows?.[0]?.['1'] === 1;
     } catch (e) {
@@ -76,4 +72,10 @@ export async function checkMaria(retries = 2): Promise<boolean> {
     }
   }
   throw lastErr;
+}
+
+export async function closeDbPools() {
+  try { await pg.end(); } catch {}
+  try { if (_mdbPool) await _mdbPool.end(); } catch {}
+  _mdbPool = null;
 }
