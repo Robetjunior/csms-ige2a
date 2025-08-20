@@ -8,25 +8,25 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
     "lint": "echo lint",
-    "test": "jest --runInBand",
-    "test:watch": "jest --watch"
+    "test": "cross-env DOTENV_CONFIG_PATH=./.env.test node --test -r ts-node/register -r dotenv/config --test-reporter=spec --test-timeout=30000 \"src/__tests__/**/*.test.ts\"",
+    "test:watch": "cross-env DOTENV_CONFIG_PATH=./.env.test node --test -r ts-node/register -r dotenv/config --watch --test-reporter=spec --test-timeout=30000 \"src/__tests__/**/*.test.ts\""
   },
   "dependencies": {
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "mariadb": "^3.4.5",
+    "mysql2": "^3.14.3",
     "pg": "^8.16.3",
     "zod": "^4.0.17"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
-    "@types/jest": "^29.5.14",
     "@types/node": "^20.19.11",
     "@types/pg": "^8.15.5",
     "@types/supertest": "^2.0.16",
-    "jest": "^29.7.0",
+    "cross-env": "^10.0.0",
     "supertest": "^7.0.0",
-    "ts-jest": "^29.2.5",
+    "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.4.0"
   },

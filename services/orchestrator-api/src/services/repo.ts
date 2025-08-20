@@ -92,6 +92,53 @@ export async function upsertSessionStart(args: {
   ]);
 }
 
+export async function listSessions(args: {
+  chargeBoxId?: string;
+  idTag?: string;
+  transactionId?: number;
+  status?: 'active'|'completed';
+  from?: Date;
+  to?: Date;
+  limit: number;
+  offset: number;
+  sort: 'asc'|'desc';
+}) {
+  const where: string[] = [];
+  const params: any[] = [];
+  let i = 1;
+
+  if (args.chargeBoxId) { where.push(`s.charge_box_id = $${i++}`); params.push(args.chargeBoxId); }
+  if (args.idTag)       { where.push(`s.id_tag = $${i++}`);       params.push(args.idTag); }
+  if (args.transactionId != null) { where.push(`s.transaction_id = $${i++}::int`); params.push(args.transactionId); }
+  if (args.from) { where.push(`s.started_at >= $${i++}`); params.push(args.from.toISOString()); }
+  if (args.to)   { where.push(`s.started_at <= $${i++}`); params.push(args.to.toISOString()); }
+  if (args.status === 'active') where.push(`s.stopped_at IS NULL`);
+  if (args.status === 'completed') where.push(`s.stopped_at IS NOT NULL`);
+
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const sql = `
+    SELECT
+      (s.transaction_id)::int AS transaction_id,   -- << cast aqui
+      s.charge_box_id,
+      s.id_tag,
+      s.started_at,
+      s.stopped_at,
+      s.stop_reason,
+      CASE WHEN s.stopped_at IS NULL THEN 'active' ELSE 'completed' END AS status,
+      EXTRACT(EPOCH FROM (COALESCE(s.stopped_at, now()) - s.started_at))::int AS duration_seconds
+    FROM orchestrator.sessions s
+    ${whereSql}
+    ORDER BY s.started_at ${args.sort}
+    LIMIT $${i++}
+    OFFSET $${i++}
+  `;
+  
+  const { rows } = await pg.query(sql, [...params, args.limit, args.offset]);
+  return { count: rows.length, items: rows };
+}
+
+
 export async function completeRemoteStopForTx(args: {
   transactionId: number;
   response?: any; 

@@ -1,5 +1,11 @@
 import { Router, Request, Response } from 'express';
-import { insertEvento, upsertSessionStart, stopSession, listEvents, completeRemoteStopForTx } from '../services/repo';
+import {
+  insertEvento,
+  upsertSessionStart,
+  stopSession,
+  listEvents,
+  completeRemoteStopForTx,
+} from '../services/repo';
 import { OcppEventSchema } from '../validation/events';
 
 const router = Router();
@@ -12,6 +18,7 @@ const router = Router();
  */
 router.get('/events', async (req: Request, res: Response) => {
   try {
+    const q = req.query as Record<string, string | undefined>;
     const {
       event_type,
       charge_box_id,
@@ -23,7 +30,32 @@ router.get('/events', async (req: Request, res: Response) => {
       limit = '50',
       offset = '0',
       sort = 'desc',
-    } = req.query as Record<string, string | undefined>;
+    } = q;
+
+    // parse seguro de datas
+    const parseDate = (s?: string) => {
+      if (!s) return undefined;
+      const d = new Date(s);
+      return Number.isNaN(d.getTime()) ? 'invalid' as const : d;
+    };
+    const fromDate = parseDate(from);
+    const toDate = parseDate(to);
+    if (fromDate === 'invalid') {
+      return res.status(400).json({
+        error: 'invalid_from',
+        hint: 'Use ISO 8601, ex: 2025-08-19T12:00:00Z',
+      });
+    }
+    if (toDate === 'invalid') {
+      return res.status(400).json({
+        error: 'invalid_to',
+        hint: 'Use ISO 8601, ex: 2025-08-19T23:59:59Z',
+      });
+    }
+
+    const parsedLimit = Math.min(Math.max(parseInt(String(limit), 10) || 50, 1), 500);
+    const parsedOffset = Math.max(parseInt(String(offset), 10) || 0, 0);
+    const parsedSort: 'asc' | 'desc' = (sort || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
 
     const result = await listEvents({
       eventType: event_type,
@@ -31,15 +63,15 @@ router.get('/events', async (req: Request, res: Response) => {
       connectorPk: connector_pk ? Number(connector_pk) : undefined,
       transactionPk: transaction_pk ? Number(transaction_pk) : undefined,
       idTag: id_tag,
-      from: from ? new Date(from) : undefined,
-      to: to ? new Date(to) : undefined,
-      limit: Math.min(Math.max(parseInt(String(limit) || '50', 10), 1), 500),
-      offset: Math.max(parseInt(String(offset) || '0', 10), 0),
-      sort: (sort || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc',
+      from: typeof fromDate === 'object' ? fromDate : undefined,
+      to: typeof toDate === 'object' ? toDate : undefined,
+      limit: parsedLimit,
+      offset: parsedOffset,
+      sort: parsedSort,
     });
 
     return res.json(result);
-  } catch (err: any) {
+  } catch (err) {
     console.error('[GET /v1/events] error:', err);
     return res.status(500).json({ error: 'internal_error' });
   }
@@ -99,11 +131,10 @@ router.post('/ocpp/events', async (req: Request, res: Response) => {
         stoppedAt: timestamp,
         stopReason: reason,
       });
-
-      // anexa o payload bruto para auditoria e completa o comando:
+      // completa comando RemoteStop (se houver)
       await completeRemoteStopForTx({
         transactionId,
-        response: payload, 
+        response: payload,
       });
     }
 
@@ -111,7 +142,7 @@ router.post('/ocpp/events', async (req: Request, res: Response) => {
       accepted: true,
       idempotentDuplicate: result.duplicate,
     });
-  } catch (err: any) {
+  } catch (err) {
     console.error('[POST /v1/ocpp/events] error:', err);
     return res.status(500).json({ error: 'internal_error' });
   }
