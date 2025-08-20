@@ -16,7 +16,7 @@ const router = Router();
  * Paginação: limit, offset
  * Ordenação: sort (created_at asc|desc)
  */
-router.get('/events', async (req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string | undefined>;
     const {
@@ -80,7 +80,7 @@ router.get('/events', async (req: Request, res: Response) => {
 /**
  * POST /v1/ocpp/events
  */
-router.post('/ocpp/events', async (req: Request, res: Response) => {
+router.post('/events', async (req: Request, res: Response) => {
   try {
     const expectedKey = process.env.ORCH_API_KEY;
     if (expectedKey) {

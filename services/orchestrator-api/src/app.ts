@@ -30,6 +30,7 @@ app.use('/v1/', buildRateLimiter());
 
 // Rotas
 app.use('/v1/events', eventsRouter);
+app.use('/v1/ocpp',  eventsRouter);
 app.use('/v1/commands', commandsRouter);
 app.use('/v1/sessions', sessionsRouter);
 
