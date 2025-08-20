@@ -12,14 +12,17 @@
     "test:watch": "cross-env DOTENV_CONFIG_PATH=./.env.test node --test -r ts-node/register -r dotenv/config --watch --test-reporter=spec --test-timeout=30000 \"src/__tests__/**/*.test.ts\""
   },
   "dependencies": {
+    "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "express-rate-limit": "^8.0.1",
     "mariadb": "^3.4.5",
     "mysql2": "^3.14.3",
     "pg": "^8.16.3",
     "zod": "^4.0.17"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "@types/express": "^4.17.21",
     "@types/node": "^20.19.11",
     "@types/pg": "^8.15.5",
