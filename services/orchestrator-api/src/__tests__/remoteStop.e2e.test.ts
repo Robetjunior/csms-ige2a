@@ -1,10 +1,16 @@
+// src/__tests__/remoteStop.e2e.test.ts
 import { test, before, after } from 'node:test';
 import * as assert from 'node:assert/strict';
 import request from 'supertest';
 import app from '../app';
 import { pg, closeDbPools } from '../db';
 
-const TX = 9101;
+const API_KEY: string = process.env.ORCH_API_KEY ?? 'minha_chave_super_secreta';
+const TX = 9105; 
+
+function withAuth<T extends request.Test>(r: T): T {
+  return r.set({ 'X-API-Key': API_KEY });
+}
 
 before(async () => {
   await pg.query('DELETE FROM orchestrator.commands WHERE transaction_id = $1', [TX]);
@@ -27,11 +33,9 @@ after(async () => {
 });
 
 test('should create RemoteStop and complete after StopTransaction', async () => {
-  const r1 = await request(app)
-    .post('/v1/commands/remoteStop')
-    .set('X-API-Key', process.env.ORCH_API_KEY || '')
-    .send({ transactionId: TX })
-    .expect(202);
+  const r1 = await withAuth(
+    request(app).post('/v1/commands/remoteStop').send({ transactionId: TX })
+  ).expect(202);
   assert.ok('commandId' in r1.body);
   assert.equal(r1.body.status, 'sent');
 
@@ -44,17 +48,15 @@ test('should create RemoteStop and complete after StopTransaction', async () => 
     payload: { eventId: `stop-${TX}`, timestamp: now },
   };
 
-  const r2 = await request(app)
-   .post('/v1/ocpp/events')
-   .set('X-API-Key', process.env.ORCH_API_KEY || '')
-   .send(ev)
-   .expect(202);
+  const r2 = await withAuth(
+    request(app).post('/v1/ocpp/events').send(ev)
+  ).expect(202);
   assert.equal(r2.body.accepted, true);
 
-  const r3 = await request(app)
-   .get(`/v1/commands?transaction_id=${TX}`)
-   .set('X-API-Key', process.env.ORCH_API_KEY || '')
-   .expect(200);
+  const r3 = await withAuth(
+    request(app).get(`/v1/commands?transaction_id=${TX}`)
+  ).expect(200);
+
   assert.ok(Array.isArray(r3.body));
   assert.equal(r3.body[0].transaction_id, TX);
   assert.equal(r3.body[0].status, 'completed');

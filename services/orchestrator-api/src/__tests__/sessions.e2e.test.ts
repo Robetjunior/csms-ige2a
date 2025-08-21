@@ -1,10 +1,16 @@
+// src/__tests__/sessions.e2e.test.ts
 import { test, before, after } from 'node:test';
 import * as assert from 'node:assert/strict';
 import request from 'supertest';
 import app from '../app';
 import { pg, closeDbPools } from '../db';
 
+const API_KEY: string = process.env.ORCH_API_KEY ?? 'minha_chave_super_secreta';
 const TX = 9201;
+
+function withAuth<T extends request.Test>(r: T): T {
+  return r.set({ 'X-API-Key': API_KEY });
+}
 
 before(async () => {
   await pg.query('DELETE FROM public.events WHERE transaction_pk = $1', [TX]);
@@ -21,7 +27,10 @@ after(async () => {
 });
 
 test('retorna 200 para sessão ativa', async () => {
-  const r = await request(app).get(`/v1/sessions/${TX}`).expect(200);
+  const r = await withAuth(
+    request(app).get(`/v1/sessions/${TX}`)
+  ).expect(200);
+
   assert.equal(r.body.transaction_id, TX);
   assert.equal(r.body.status, 'active');
   assert.equal(r.body.stopped_at, null);
@@ -37,12 +46,16 @@ test('retorna 200 e status=completed após StopTransaction', async () => {
     timestamp: now,
     payload: { eventId: `stop-${TX}`, timestamp: now },
   };
-  await request(app)
-     .post('/v1/ocpp/events')
-     .set('X-API-Key', process.env.ORCH_API_KEY || '')
-     .send(ev)
-     .expect(202);
-  const r2 = await request(app).get(`/v1/sessions/${TX}`).expect(200);
+  await withAuth(
+    request(app)
+      .post('/v1/ocpp/events')
+      .send(ev)
+  ).expect(202);
+
+  const r2 = await withAuth(
+    request(app).get(`/v1/sessions/${TX}`)
+  ).expect(200);
+
   assert.equal(r2.body.transaction_id, TX);
   assert.equal(r2.body.status, 'completed');
   assert.ok(r2.body.stopped_at);
@@ -50,5 +63,7 @@ test('retorna 200 e status=completed após StopTransaction', async () => {
 });
 
 test('retorna 404 para sessão inexistente', async () => {
-  await request(app).get('/v1/sessions/999999').expect(404);
+  await withAuth(
+    request(app).get('/v1/sessions/999999')
+  ).expect(404);
 });

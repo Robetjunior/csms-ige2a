@@ -6,7 +6,7 @@ function parseKeys(raw: string | undefined): Set<string> {
     (raw ?? '')
       .split(',')
       .map(s => s.trim())
-      .filter(Boolean),
+      .filter(Boolean)
   );
 }
 
@@ -19,8 +19,8 @@ export function requireApiKey() {
   const keys = parseKeys(process.env.ORCH_API_KEY);
 
   if (keys.size === 0) {
-    // Sem chave => bloqueia tudo por segurança.
-    // (Se preferir liberar em dev, troque por um console.warn e allow.)
+    // Bloqueia tudo por segurança se ninguém configurou ORCH_API_KEY.
+    // Se quiser liberar em dev, troque por um console.warn e next().
     // eslint-disable-next-line no-console
     console.error('[auth] ORCH_API_KEY não configurada. Defina pelo menos 1 chave (pode ser múltiplas, separadas por vírgula).');
   }

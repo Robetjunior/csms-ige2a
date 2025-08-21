@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { pg } from '../db'; 
 import {
   insertEvento,
   upsertSessionStart,
@@ -136,6 +137,41 @@ router.post('/events', async (req: Request, res: Response) => {
     });
   } catch (err) {
     console.error('[POST /v1/ocpp/events] error:', err);
+    return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+/**
+ * GET /v1/events/:id
+ * Retorna um evento específico pelo ID.  
+ */
+router.get('/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: 'invalid_id' });
+    }
+
+    const sql = `
+      SELECT
+        id,
+        created_at,
+        source,
+        event_type,
+        charge_box_id,
+        (connector_pk)::int    AS connector_pk,
+        (transaction_pk)::int  AS transaction_pk,
+        id_tag,
+        payload
+      FROM public.events
+      WHERE id = $1::bigint
+      LIMIT 1
+    `;
+    const { rows } = await pg.query(sql, [id]);
+    if (!rows.length) return res.status(404).json({ error: 'not_found' });
+    return res.json(rows[0]);
+  } catch (err) {
+    console.error('[GET /v1/events/:id] error:', err);
     return res.status(500).json({ error: 'internal_error' });
   }
 });
