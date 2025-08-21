@@ -28,15 +28,6 @@ const RemoteStartSchema = z.object({
  * Body: { chargeBoxId: string; idTag: string; connectorId?: number; reservationId?: number }
  */
 router.post('/remoteStart', async (req: Request, res: Response) => {
-  // auth opcional
-  const expectedKey = process.env.ORCH_API_KEY ?? '';
-  if (expectedKey) {
-    const provided = (req.headers['x-api-key'] as string | undefined) || '';
-    if (provided !== expectedKey) {
-      return res.status(401).json({ error: 'unauthorized' });
-    }
-  }
-
   // validação
   const parsed = RemoteStartSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -124,12 +115,6 @@ router.post('/remoteStart', async (req: Request, res: Response) => {
 // ====== POST /v1/commands/remoteStop (o seu, com pequeno ajuste no finally) ======
 router.post('/remoteStop', async (req: Request, res: Response) => {
   try {
-    const expectedKey = process.env.ORCH_API_KEY ?? '';
-    if (expectedKey) {
-      const provided = (req.headers['x-api-key'] as string | undefined) || '';
-      if (provided !== expectedKey) return res.status(401).json({ error: 'unauthorized' });
-    }
-
     const parsed = RemoteStopSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({

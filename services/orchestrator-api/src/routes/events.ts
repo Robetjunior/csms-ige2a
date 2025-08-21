@@ -82,14 +82,6 @@ router.get('/', async (req: Request, res: Response) => {
  */
 router.post('/events', async (req: Request, res: Response) => {
   try {
-    const expectedKey = process.env.ORCH_API_KEY;
-    if (expectedKey) {
-      const provided = (req.headers['x-api-key'] as string | undefined) || '';
-      if (provided !== expectedKey) {
-        return res.status(401).json({ error: 'unauthorized' });
-      }
-    }
-
     const parsed = OcppEventSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({

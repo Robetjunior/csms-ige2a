@@ -1,17 +1,17 @@
-import { Router, Request, Response } from 'express';
-import { listSessions } from '../services/repo';
-import { pg } from '../db';
+  import { Router, Request, Response } from 'express';
+  import { listSessions } from '../services/repo';
+  import { pg } from '../db';
 
-const router = Router();
+  const router = Router();
 
-/**
- * GET /v1/sessions
- * Filtros: charge_box_id, id_tag, transaction_id, status (active|completed), from, to
- * Paginação: limit, offset
- * Ordenação: sort (asc|desc) por started_at
- */
-router.get('/', async (req: Request, res: Response) => {
-  try {
+  /**
+   * GET /v1/sessions
+   * Filtros: charge_box_id, id_tag, transaction_id, status (active|completed), from, to
+   * Paginação: limit, offset
+   * Ordenação: sort (asc|desc) por started_at
+   */
+  router.get('/', async (req: Request, res: Response) => {
+    try {
     const {
       charge_box_id,
       id_tag,

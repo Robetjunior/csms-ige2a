@@ -77,7 +77,6 @@ services:
     image: node:20-alpine
     container_name: csms_orchestrator
     working_dir: /app
-    # Monta o código-fonte, mas mantém node_modules dentro do container
     volumes:
       - ./services/orchestrator-api:/app
       - /app/node_modules
@@ -91,8 +90,7 @@ services:
       MARIADB_USER: steve
       MARIADB_PASSWORD: steve
       MARIADB_DATABASE: steve
-      # opcional: CORS para front-ends locais
-      CORS_ORIGIN: "http://localhost:8180,http://localhost:3000"
+      CHOKIDAR_USEPOLLING: "true"   # ajuda o watcher no Docker/Windows
     command: >
       sh -lc "corepack enable &&
               corepack prepare pnpm@10.14.0 --activate &&
@@ -106,8 +104,9 @@ services:
       mariadb:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ready || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
       interval: 10s
-      timeout: 3s
-      retries: 20
+      timeout: 5s
+      retries: 30
+      start_period: 20s
     restart: unless-stopped
