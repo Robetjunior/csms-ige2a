@@ -90,7 +90,8 @@ services:
       MARIADB_USER: steve
       MARIADB_PASSWORD: steve
       MARIADB_DATABASE: steve
-      CHOKIDAR_USEPOLLING: "true"   # ajuda o watcher no Docker/Windows
+      CHOKIDAR_USEPOLLING: "true"  
+      ORCH_API_KEY: minha_chave_super_secreta
     command: >
       sh -lc "corepack enable &&
               corepack prepare pnpm@10.14.0 --activate &&

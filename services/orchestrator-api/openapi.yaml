@@ -1,0 +1,438 @@
+openapi: 3.0.3
+info:
+  title: Orchestrator API
+  version: "1.0.0"
+  description: >
+    API para ingestão de eventos OCPP, comandos e consulta de sessões.
+servers:
+  - url: http://localhost:3000
+    description: Local
+
+tags:
+  - name: Events
+  - name: OCPP
+  - name: Commands
+  - name: Sessions
+  - name: Health
+
+security:
+  - ApiKeyAuth: []   # por padrão todas as rotas exigem X-API-Key
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      security: []     # público
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+  /ready:
+    get:
+      tags: [Health]
+      summary: Readiness check (inclui Postgres)
+      security: []     # público
+      responses:
+        '200':
+          description: OK
+        '500':
+          description: Banco indisponível
+
+  /v1/events:
+    get:
+      tags: [Events]
+      summary: Lista eventos
+      parameters:
+        - in: query
+          name: event_type
+          schema: { type: string }
+        - in: query
+          name: charge_box_id
+          schema: { type: string }
+        - in: query
+          name: connector_pk
+          schema: { type: integer, format: int32 }
+        - in: query
+          name: transaction_pk
+          schema: { type: integer, format: int32 }
+        - in: query
+          name: id_tag
+          schema: { type: string }
+        - in: query
+          name: from
+          description: ISO 8601
+          schema: { type: string, format: date-time }
+        - in: query
+          name: to
+          description: ISO 8601
+          schema: { type: string, format: date-time }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Lista de eventos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventList'
+
+  /v1/events/{id}:
+    get:
+      tags: [Events]
+      summary: Busca evento por ID
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: Evento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Event'
+        '404':
+          description: Não encontrado
+
+  /v1/ocpp/events:
+    post:
+      tags: [OCPP]
+      summary: Ingestão de eventos OCPP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OcppIngest'
+            examples:
+              start:
+                value:
+                  type: StartTransaction
+                  transactionId: 9001
+                  chargeBoxId: CB-01
+                  idTag: ID-TEST
+                  timestamp: "2025-08-21T12:00:00Z"
+                  payload: { meterStart: 0 }
+              stop:
+                value:
+                  type: StopTransaction
+                  transactionId: 9001
+                  reason: Remote
+                  timestamp: "2025-08-21T12:15:00Z"
+                  payload: { meterStop: 1200 }
+      responses:
+        '202':
+          description: Aceito (novo)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ack'
+        '200':
+          description: Aceito (duplicado idempotente)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ack'
+
+  /v1/commands:
+    get:
+      tags: [Commands]
+      summary: Lista comandos
+      parameters:
+        - in: query
+          name: transaction_id
+          schema: { type: integer, format: int32 }
+      responses:
+        '200':
+          description: Lista de comandos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CommandSummary'
+
+  /v1/commands/{id}:
+    get:
+      tags: [Commands]
+      summary: Detalhe do comando
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: Comando
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Command'
+        '404':
+          description: Não encontrado
+
+  /v1/commands/remoteStart:
+    post:
+      tags: [Commands]
+      summary: RemoteStartTransaction (CSMS -> EVSE)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemoteStartRequest'
+      responses:
+        '202':
+          description: Comando criado/enviado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandAccepted'
+        '200':
+          description: Idempotente (já havia comando ativo)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdempotentDuplicate'
+        '400': { description: Payload inválido }
+        '401': { description: Não autorizado }
+
+  /v1/commands/remoteStop:
+    post:
+      tags: [Commands]
+      summary: RemoteStopTransaction (CSMS -> EVSE)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemoteStopRequest'
+      responses:
+        '202':
+          description: Comando criado/enviado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandAccepted'
+        '200':
+          description: Idempotente (já havia comando ativo)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdempotentDuplicate'
+        '404': { description: Sessão não encontrada }
+        '409': { description: Sessão já finalizada }
+
+  /v1/sessions:
+    get:
+      tags: [Sessions]
+      summary: Lista sessões
+      parameters:
+        - in: query
+          name: charge_box_id
+          schema: { type: string }
+        - in: query
+          name: id_tag
+          schema: { type: string }
+        - in: query
+          name: transaction_id
+          schema: { type: integer, format: int32 }
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [active, completed]
+        - in: query
+          name: from
+          schema: { type: string, format: date-time }
+        - in: query
+          name: to
+          schema: { type: string, format: date-time }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Lista de sessões
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionList'
+
+  /v1/sessions/{transactionId}:
+    get:
+      tags: [Sessions]
+      summary: Detalhe da sessão por transactionId
+      parameters:
+        - in: path
+          name: transactionId
+          required: true
+          schema: { type: integer, format: int32 }
+      responses:
+        '200':
+          description: Sessão
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '404':
+          description: Não encontrado
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+  schemas:
+    Ack:
+      type: object
+      properties:
+        accepted: { type: boolean }
+        idempotentDuplicate: { type: boolean }
+
+    OcppIngest:
+      type: object
+      properties:
+        type: { type: string }
+        transactionId: { type: integer, format: int32, nullable: true }
+        chargeBoxId: { type: string, nullable: true }
+        idTag: { type: string, nullable: true }
+        reason: { type: string, nullable: true }
+        timestamp: { type: string, format: date-time, nullable: true }
+        payload:
+          type: object
+          additionalProperties: true
+      required: [type, payload]
+
+    Event:
+      type: object
+      properties:
+        id: { type: string }
+        created_at: { type: string, format: date-time }
+        source: { type: string }
+        event_type: { type: string }
+        charge_box_id: { type: string, nullable: true }
+        connector_pk: { type: integer, format: int32, nullable: true }
+        transaction_pk: { type: integer, format: int32, nullable: true }
+        id_tag: { type: string, nullable: true }
+        payload:
+          type: object
+          additionalProperties: true
+
+    EventList:
+      type: object
+      properties:
+        count: { type: integer }
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+
+    CommandAccepted:
+      type: object
+      properties:
+        commandId: { type: integer, format: int64 }
+        status:
+          type: string
+          enum: [sent]
+        message: { type: string }
+
+    IdempotentDuplicate:
+      type: object
+      properties:
+        commandId: { type: integer, format: int64 }
+        status:
+          type: string
+          enum: [pending, sent, accepted]
+        idempotentDuplicate: { type: boolean }
+
+    RemoteStartRequest:
+      type: object
+      properties:
+        chargeBoxId: { type: string }
+        idTag: { type: string }
+        connectorId: { type: integer, format: int32, nullable: true }
+        reservationId: { type: integer, format: int32, nullable: true }
+      required: [chargeBoxId, idTag]
+
+    RemoteStopRequest:
+      type: object
+      properties:
+        transactionId: { type: integer, format: int32 }
+      required: [transactionId]
+
+    CommandSummary:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        command_type: { type: string }
+        transaction_id: { type: integer, format: int32, nullable: true }
+        charge_box_id: { type: string, nullable: true }
+        status:
+          type: string
+          enum: [pending, sent, accepted, completed, failed]
+        created_at: { type: string, format: date-time }
+
+    Command:
+      allOf:
+        - $ref: '#/components/schemas/CommandSummary'
+        - type: object
+          properties:
+            payload:
+              type: object
+              additionalProperties: true
+            response:
+              type: object
+              additionalProperties: true
+            updated_at: { type: string, format: date-time, nullable: true }
+
+    Session:
+      type: object
+      properties:
+        transaction_id: { type: integer, format: int32 }
+        charge_box_id: { type: string, nullable: true }
+        id_tag: { type: string, nullable: true }
+        started_at: { type: string, format: date-time }
+        stopped_at: { type: string, format: date-time, nullable: true }
+        stop_reason: { type: string, nullable: true }
+        status:
+          type: string
+          enum: [active, completed]
+        duration_seconds: { type: integer, format: int32 }
+
+    SessionList:
+      type: object
+      properties:
+        count: { type: integer }
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Session'

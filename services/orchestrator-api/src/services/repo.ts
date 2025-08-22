@@ -7,7 +7,7 @@ type InsertEventoArgs = {
   chargeBoxId: string | null;
   transactionId: number | null;
   idTag: string | null;
-  uniqueKey?: string;
+  uniqueKey?: string; // mantido apenas para log/rastreamento
 };
 
 export async function insertEvento(args: InsertEventoArgs): Promise<{ duplicate: boolean }> {
@@ -20,6 +20,7 @@ export async function insertEvento(args: InsertEventoArgs): Promise<{ duplicate:
   const isStartOrStop = (tipo === 'StartTransaction' || tipo === 'StopTransaction');
   const eventId = payload?.eventId ?? payload?.id ?? null;
 
+  // Timestamp apenas para compor uma chave “natural” de log (não persiste)
   const tsBase = payload?.timestamp ? new Date(payload.timestamp) : new Date();
   const roundedTs = new Date(Math.floor(tsBase.getTime() / 1000) * 1000).toISOString();
 
@@ -35,37 +36,35 @@ export async function insertEvento(args: InsertEventoArgs): Promise<{ duplicate:
   }
 
   if ((process.env.NODE_ENV || '').toLowerCase() !== 'production') {
-    console.log('[repo.insertEvento] tipo=%s tx=%s cb=%s -> unique_key=%s',
+    console.log('[repo.insertEvento] tipo=%s tx=%s cb=%s -> unique_key(log)=%s',
       tipo, String(txId ?? '-'), String(chargeBoxId ?? '-'), uniqueKey);
   }
 
-  // >>> GARANTA que a tabela é public.events (não “eventos”)
+  // Inserimos diretamente na tabela base do orchestrator
   const sql = `
-    INSERT INTO public.events (source, event_type, payload, charge_box_id, connector_pk, transaction_pk, id_tag, unique_key)
-    VALUES ($1, $2, $3::jsonb, $4, NULL, $5, $6, $7)
-    ON CONFLICT (unique_key) DO NOTHING
+    INSERT INTO orchestrator.ocpp_events (tipo, payload, charge_box_id, transaction_id, id_tag, created_at)
+    VALUES ($1, $2::jsonb, $3, $4, $5, now())
     RETURNING id;
   `;
   const params = [
-    'orchestrator',
-    tipo,
-    JSON.stringify(payload),
-    chargeBoxId,
-    txId,
-    idTag,
-    uniqueKey,
+    tipo,                    // $1
+    JSON.stringify(payload), // $2
+    chargeBoxId,             // $3
+    txId,                    // $4
+    idTag,                   // $5
   ];
 
   const r = await pg.query<{ id: number }>(sql, params);
   const inserted = (r.rowCount ?? 0) > 0;
 
   if (inserted) {
-    console.log(`[ingest] inserted id=${r.rows[0]?.id ?? '-'} key=${uniqueKey}`);
+    console.log(`[ingest] inserted id=${r.rows[0]?.id ?? '-'} key(log)=${uniqueKey}`);
   } else {
-    console.warn(`[ingest] duplicate-skip key=${uniqueKey}`);
+    console.warn(`[ingest] insert returned 0 rows (unexpected) key(log)=${uniqueKey}`);
   }
 
-  return { duplicate: !inserted };
+  // Sem índice único no banco, não dá para afirmar duplicidade pelo retorno do INSERT.
+  return { duplicate: false };
 }
 
 export async function upsertSessionStart(args: {
@@ -119,7 +118,7 @@ export async function listSessions(args: {
 
   const sql = `
     SELECT
-      (s.transaction_id)::int AS transaction_id,   -- << cast aqui
+      (s.transaction_id)::int AS transaction_id,
       s.charge_box_id,
       s.id_tag,
       s.started_at,
@@ -133,11 +132,10 @@ export async function listSessions(args: {
     LIMIT $${i++}
     OFFSET $${i++}
   `;
-  
+
   const { rows } = await pg.query(sql, [...params, args.limit, args.offset]);
   return { count: rows.length, items: rows };
 }
-
 
 export async function completeRemoteStopForTx(args: {
   transactionId: number;
@@ -226,13 +224,13 @@ export async function listEvents(args: {
   const params: any[] = [];
   let i = 1;
 
-  if (eventType) { where.push(`event_type = $${i++}`); params.push(eventType); }
-  if (chargeBoxId) { where.push(`charge_box_id = $${i++}`); params.push(chargeBoxId); }
-  if (connectorPk != null) { where.push(`connector_pk = $${i++}`); params.push(connectorPk); }
+  if (eventType)      { where.push(`event_type   = $${i++}`); params.push(eventType); }
+  if (chargeBoxId)    { where.push(`charge_box_id = $${i++}`); params.push(chargeBoxId); }
+  if (connectorPk != null)   { where.push(`connector_pk   = $${i++}`); params.push(connectorPk); }
   if (transactionPk != null) { where.push(`transaction_pk = $${i++}`); params.push(transactionPk); }
-  if (idTag) { where.push(`id_tag = $${i++}`); params.push(idTag); }
-  if (from) { where.push(`created_at >= $${i++}`); params.push(from.toISOString()); }
-  if (to) { where.push(`created_at <= $${i++}`); params.push(to.toISOString()); }
+  if (idTag)          { where.push(`id_tag        = $${i++}`); params.push(idTag); }
+  if (from)           { where.push(`created_at   >= $${i++}`); params.push(from.toISOString()); }
+  if (to)             { where.push(`created_at   <= $${i++}`); params.push(to.toISOString()); }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
@@ -243,11 +241,12 @@ export async function listEvents(args: {
       source,
       event_type,
       charge_box_id,
-      (connector_pk)::int AS connector_pk,
-      (transaction_pk)::int AS transaction_pk,
+      connector_pk,
+      transaction_pk,
       id_tag,
-      payload
-    FROM public.events
+      payload,
+      COUNT(*) OVER() AS _total
+    FROM orchestrator.events
     ${whereSql}
     ORDER BY created_at ${sort}
     LIMIT $${i++}
@@ -255,6 +254,29 @@ export async function listEvents(args: {
   `;
   params.push(limit, offset);
 
-  const { rows } = await pg.query(sql, params);
-  return { count: rows.length, items: rows };
+  // Logs de sanidade (dev)
+  if ((process.env.NODE_ENV || '').toLowerCase() !== 'production') {
+    console.log('[listEvents] whereSql=%s params=%o', whereSql, params);
+  }
+
+  console.log('[listEvents] whereSql=%s params=%o', whereSql, params);
+  try {
+    const { rows } = await pg.query(sql, params);
+    const total = rows.length ? Number(rows[0]._total) : 0;
+    const items = rows.map(({ _total, ...r }) => r);
+    if ((process.env.NODE_ENV || '').toLowerCase() !== 'production') {
+      console.log('[listEvents] rows=%d', rows.length);
+    }
+    return { count: total, items };
+  } catch (e: any) {
+    console.error('[listEvents] QUERY FAILED:', {
+      message: e?.message,
+      detail: e?.detail,
+      hint: e?.hint,
+      position: e?.position,
+      whereSql,
+      params,
+    });
+    throw e;
+  }
 }

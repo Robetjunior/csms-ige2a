@@ -1,5 +1,6 @@
+// src/routes/events.ts
 import { Router, Request, Response } from 'express';
-import { pg } from '../db'; 
+import { pg } from '../db';
 import {
   insertEvento,
   upsertSessionStart,
@@ -19,6 +20,7 @@ const router = Router();
  */
 router.get('/', async (req: Request, res: Response) => {
   try {
+    console.log('[GET /v1/events] raw query:', req.url, req.query);
     const q = req.query as Record<string, string | undefined>;
     const {
       event_type,
@@ -33,12 +35,16 @@ router.get('/', async (req: Request, res: Response) => {
       sort = 'desc',
     } = q;
 
+    // normaliza texto
+    const norm = (s?: string) => (s ?? '').trim() || undefined;
+
     // parse seguro de datas
     const parseDate = (s?: string) => {
       if (!s) return undefined;
       const d = new Date(s);
-      return Number.isNaN(d.getTime()) ? 'invalid' as const : d;
+      return Number.isNaN(d.getTime()) ? ('invalid' as const) : d;
     };
+
     const fromDate = parseDate(from);
     const toDate = parseDate(to);
     if (fromDate === 'invalid') {
@@ -59,11 +65,11 @@ router.get('/', async (req: Request, res: Response) => {
     const parsedSort: 'asc' | 'desc' = (sort || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
 
     const result = await listEvents({
-      eventType: event_type,
-      chargeBoxId: charge_box_id,
+      eventType: norm(event_type),
+      chargeBoxId: norm(charge_box_id),
       connectorPk: connector_pk ? Number(connector_pk) : undefined,
       transactionPk: transaction_pk ? Number(transaction_pk) : undefined,
-      idTag: id_tag,
+      idTag: norm(id_tag),
       from: typeof fromDate === 'object' ? fromDate : undefined,
       to: typeof toDate === 'object' ? toDate : undefined,
       limit: parsedLimit,
@@ -96,8 +102,8 @@ router.post('/events', async (req: Request, res: Response) => {
 
     const type = String(b.type).trim();
     const transactionId = b.transactionId != null ? Number(b.transactionId) : null;
-    const chargeBoxId = rawChargeBoxId != null ? String(rawChargeBoxId) : null;
-    const idTag = b.idTag != null ? String(b.idTag) : null;
+    const chargeBoxId = rawChargeBoxId != null ? String(rawChargeBoxId).trim() : null;
+    const idTag = b.idTag != null ? String(b.idTag).trim() : null;
     const reason = b.reason != null ? String(b.reason) : null;
     const timestamp = b.timestamp ? new Date(b.timestamp) : new Date();
 
@@ -124,7 +130,6 @@ router.post('/events', async (req: Request, res: Response) => {
         stoppedAt: timestamp,
         stopReason: reason,
       });
-      // completa comando RemoteStop (se houver)
       await completeRemoteStopForTx({
         transactionId,
         response: payload,
@@ -143,7 +148,7 @@ router.post('/events', async (req: Request, res: Response) => {
 
 /**
  * GET /v1/events/:id
- * Retorna um evento específico pelo ID.  
+ * Retorna um evento específico pelo ID (agora lendo da VIEW correta).
  */
 router.get('/:id', async (req: Request, res: Response) => {
   try {
@@ -163,7 +168,7 @@ router.get('/:id', async (req: Request, res: Response) => {
         (transaction_pk)::int  AS transaction_pk,
         id_tag,
         payload
-      FROM public.events
+      FROM orchestrator.events
       WHERE id = $1::bigint
       LIMIT 1
     `;
