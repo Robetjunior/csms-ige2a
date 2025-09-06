@@ -189,11 +189,79 @@ router.post('/close', async (req: Request, res: Response) => {
 // GET /v1/billing/invoices?from&to&charge_box_id&id_tag&limit=100
 router.get('/invoices', async (req: Request, res: Response) => {
   try {
-    const from = req.query.from ? new Date(String(req.query.from)) : new Date(Date.now() - 30*24*60*60*1000);
-    const to   = req.query.to   ? new Date(String(req.query.to))   : new Date();
-    const cb   = (req.query.charge_box_id as string|undefined)?.trim() || null;
-    const idTag= (req.query.id_tag as string|undefined)?.trim() || null;
-    const limit= Math.min(Math.max(parseInt(String(req.query.limit||'100'),10) || 100, 1), 1000);
+    // Helpers robustos
+    const pickFirst = <T,>(v: T | T[] | undefined | null): T | undefined => {
+      if (Array.isArray(v)) return v[0];
+      return v === undefined || v === null ? undefined : v;
+    };
+
+    const parseISOorUnix = (v: unknown): Date | null => {
+      const raw = pickFirst(v);
+
+      // vazio -> nulo
+      if (raw === undefined || raw === null) return null;
+
+      // number (ex.: 1692931200000) ou string-numérica (ex.: "1692931200000")
+      if (typeof raw === 'number' && Number.isFinite(raw)) {
+        const d = new Date(raw);
+        return Number.isFinite(d.getTime()) ? d : null;
+      }
+      if (typeof raw === 'string') {
+        const s = raw.trim();
+        if (!s) return null;
+
+        // tentar unix ms
+        if (/^\d{10,}$/.test(s)) {
+          const n = Number(s);
+          if (Number.isFinite(n)) {
+            const d = new Date(n);
+            return Number.isFinite(d.getTime()) ? d : null;
+          }
+        }
+
+        // tentar ISO
+        const d = new Date(s);
+        return Number.isFinite(d.getTime()) ? d : null;
+      }
+
+      // tipos não suportados
+      return null;
+    };
+
+    const asTrimmedOrNull = (v: unknown): string | null => {
+      const raw = pickFirst(v);
+      if (typeof raw !== 'string') return null;
+      const t = raw.trim();
+      return t.length ? t : null;
+    };
+
+    const asInt = (v: unknown, def = 100): number => {
+      const raw = pickFirst(v);
+      if (typeof raw === 'string' && raw.trim() !== '') {
+        const n = parseInt(raw, 10);
+        if (Number.isFinite(n)) return n;
+      }
+      if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+      return def;
+    };
+
+    // Query params (robustos)
+    const fromQ = parseISOorUnix(req.query.from);
+    const toQ   = parseISOorUnix(req.query.to);
+    const from  = fromQ ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const to    = toQ   ?? new Date();
+
+    // validação clara: só acusa erro se o cliente MANDOU o param e ele é inválido
+    if ((pickFirst(req.query.from) !== undefined && !fromQ) ||
+        (pickFirst(req.query.to)   !== undefined && !toQ)) {
+      return res.status(400).json({ error: 'invalid_query', details: 'from/to must be ISO-8601 or UNIX ms' });
+    }
+
+    const cb    = asTrimmedOrNull(req.query.charge_box_id);
+    const idTag = asTrimmedOrNull(req.query.id_tag);
+
+    const limitRaw = asInt(req.query.limit, 100);
+    const limit = Math.min(Math.max(limitRaw, 1), 1000);
 
     const sql = `
       SELECT id, session_fk, transaction_id, charge_box_id, id_tag,
@@ -206,18 +274,21 @@ router.get('/invoices', async (req: Request, res: Response) => {
        LIMIT $5
     `;
     const { rows } = await pg.query(sql, [from, to, cb, idTag, limit]);
-    res.json({ items: rows });
+    return res.json({ items: rows });
   } catch (err) {
     console.error('[GET /v1/billing/invoices] error:', err);
-    res.status(500).json({ error: 'internal_error' });
+    return res.status(500).json({ error: 'internal_error' });
   }
 });
 
 // GET /v1/billing/invoices/:id
-router.get('/invoices/:id', async (req: Request, res: Response) => {
+router.get('/invoices/:id', async (req, res) => {
   try {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'invalid_id' });
+    const idStr = String(req.params.id ?? '').trim();
+    const id = Number(idStr);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: 'invalid_id' });
+    }
 
     const sql = `
       SELECT id, session_fk, transaction_id, charge_box_id, id_tag,
@@ -228,10 +299,10 @@ router.get('/invoices/:id', async (req: Request, res: Response) => {
     `;
     const { rows } = await pg.query(sql, [id]);
     if (!rows.length) return res.status(404).json({ error: 'not_found' });
-    res.json(rows[0]);
+    return res.json(rows[0]);
   } catch (err) {
     console.error('[GET /v1/billing/invoices/:id] error:', err);
-    res.status(500).json({ error: 'internal_error' });
+    return res.status(500).json({ error: 'internal_error' });
   }
 });
 

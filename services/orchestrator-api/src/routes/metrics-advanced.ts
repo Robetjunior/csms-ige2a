@@ -285,7 +285,7 @@ router.get('/live', async (_req: Request, res: Response) => {
   // dispara primeira
   tick();
 
-  req.on('close', () => clearInterval(iv));
+  _req.on('close', () => clearInterval(iv));
 });
 
 export default router;

@@ -17,6 +17,8 @@ services:
       timeout: 3s
       retries: 30
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.75
 
   mariadb:
     image: mariadb:10.6
@@ -42,6 +44,8 @@ services:
       timeout: 3s
       retries: 30
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.75
 
   steve:
     image: eclipse-temurin:17-jre
@@ -69,9 +73,14 @@ services:
       STEVE_DB_URL: jdbc:mariadb://mariadb:3306/steve
       STEVE_DB_USER: steve
       STEVE_DB_PASS: steve
+      # Limita o heap da JVM para ~300–500 MiB de uso:
+      # Xms = 256m (inicial), Xmx = 512m (máximo)
+      JAVA_TOOL_OPTIONS: "-Xms256m -Xmx512m"
     ports:
       - "8180:8180"
     restart: unless-stopped
+    mem_limit: 600m     # folga para heap + overhead da JVM
+    cpus: 1.5
 
   orchestrator:
     image: node:20-alpine
@@ -111,3 +120,67 @@ services:
       retries: 30
       start_period: 20s
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: 1.0
+
+  # Monitoramento de containers
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    container_name: csms_cadvisor
+    ports:
+      - "18081:8080"   # evita conflito com serviços que usam 8080
+    volumes:
+      # Montagens padrão recomendadas pelo projeto
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    privileged: true
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+
+  # Coletor de métricas (scrape do cAdvisor e de si próprio)
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: csms_prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./.data/prometheus:/prometheus
+    depends_on:
+      - cadvisor
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.75
+
+  # Visualização (dashboards)
+  grafana:
+    image: grafana/grafana:11.1.4
+    container_name: csms_grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s:%(http_port)s/"
+      TZ: UTC
+    volumes:
+      - ./.data/grafana:/var/lib/grafana
+      # Se quiser provisionar datasources/dashboards automáticos, monte:
+      # - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5

@@ -3,7 +3,8 @@ info:
   title: Orchestrator API
   version: "1.0.0"
   description: >
-    API para ingestão de eventos OCPP, comandos e consulta de sessões.
+    API para ingestão de eventos OCPP, comandos, consulta de sessões, métricas,
+    tarifas e faturamento.
 servers:
   - url: http://localhost:3000
     description: Local
@@ -13,6 +14,9 @@ tags:
   - name: OCPP
   - name: Commands
   - name: Sessions
+  - name: Metrics
+  - name: Tariffs
+  - name: Billing
   - name: Health
 
 security:
@@ -44,6 +48,7 @@ paths:
         '500':
           description: Banco indisponível
 
+  # -------------------- Events --------------------
   /v1/events:
     get:
       tags: [Events]
@@ -111,6 +116,7 @@ paths:
         '404':
           description: Não encontrado
 
+  # -------------------- OCPP ingest --------------------
   /v1/ocpp/events:
     post:
       tags: [OCPP]
@@ -151,6 +157,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Ack'
 
+  # -------------------- Commands --------------------
   /v1/commands:
     get:
       tags: [Commands]
@@ -240,6 +247,7 @@ paths:
         '404': { description: Sessão não encontrada }
         '409': { description: Sessão já finalizada }
 
+  # -------------------- Sessions --------------------
   /v1/sessions:
     get:
       tags: [Sessions]
@@ -303,6 +311,202 @@ paths:
                 $ref: '#/components/schemas/Session'
         '404':
           description: Não encontrado
+
+  # -------------------- Metrics --------------------
+  /v1/metrics:
+    get:
+      tags: [Metrics]
+      summary: KPIs agregados da rede
+      parameters:
+        - in: query
+          name: charge_box_id
+          schema: { type: string, nullable: true }
+        - in: query
+          name: from
+          schema: { type: string, format: date-time, nullable: true }
+        - in: query
+          name: to
+          schema: { type: string, format: date-time, nullable: true }
+      responses:
+        '200':
+          description: Resumo de métricas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsSummary'
+
+  /v1/metrics/advanced:
+    get:
+      tags: [Metrics]
+      summary: Séries temporais e métricas avançadas
+      parameters:
+        - in: query
+          name: from
+          schema: { type: string, format: date-time, nullable: true }
+        - in: query
+          name: to
+          schema: { type: string, format: date-time, nullable: true }
+      responses:
+        '200':
+          description: Métricas avançadas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsAdvanced'
+
+  # -------------------- Tariffs --------------------
+  /v1/tariffs:
+    get:
+      tags: [Tariffs]
+      summary: Lista tarifas
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [active, draft, archived]
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Lista de tarifas
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TariffSummary' }
+    post:
+      tags: [Tariffs]
+      summary: Cria uma nova tarifa
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TariffUpsert' }
+      responses:
+        '201':
+          description: Tarifa criada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tariff' }
+
+  /v1/tariffs/{id}:
+    get:
+      tags: [Tariffs]
+      summary: Detalhe da tarifa
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: Tarifa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tariff' }
+        '404': { description: Não encontrado }
+    put:
+      tags: [Tariffs]
+      summary: Atualiza uma tarifa
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TariffUpsert' }
+      responses:
+        '200':
+          description: Tarifa atualizada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tariff' }
+    delete:
+      tags: [Tariffs]
+      summary: Remove (ou arquiva) uma tarifa
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '204': { description: Removida }
+
+  /v1/tariffs/preview:
+    post:
+      tags: [Tariffs]
+      summary: Simula custo de uma sessão com uma tarifa
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TariffPreviewRequest' }
+      responses:
+        '200':
+          description: Resultado da simulação
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TariffPreviewResponse' }
+
+  # -------------------- Billing --------------------
+  /v1/billing/invoices:
+    get:
+      tags: [Billing]
+      summary: Lista de faturas
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [issued, paid, cancelled]
+        - in: query
+          name: charge_box_id
+          schema: { type: string, nullable: true }
+        - in: query
+          name: from
+          schema: { type: string, format: date-time, nullable: true }
+        - in: query
+          name: to
+          schema: { type: string, format: date-time, nullable: true }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Lista de faturas
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/InvoiceSummary' }
+
+  /v1/billing/invoices/{id}:
+    get:
+      tags: [Billing]
+      summary: Detalhe da fatura
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: Fatura
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invoice' }
+        '404': { description: Não encontrado }
 
 components:
   securitySchemes:
@@ -436,3 +640,134 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Session'
+
+    # -------- Metrics Schemas --------
+    MetricsSummary:
+      type: object
+      properties:
+        period:
+          type: object
+          properties:
+            from: { type: string, format: date-time, nullable: true }
+            to: { type: string, format: date-time, nullable: true }
+        total_charge_points: { type: integer }
+        active_charge_points: { type: integer }
+        availability_pct: { type: number, format: double }
+        sessions_active: { type: integer }
+        energy_kwh: { type: number, format: double }
+        revenue:
+          type: number
+          format: double
+          description: Receita (BRL)
+        success_rate_pct: { type: number, format: double }
+
+    MetricsAdvanced:
+      type: object
+      properties:
+        sessions_by_day:
+          type: array
+          items:
+            type: object
+            properties:
+              date: { type: string, format: date }
+              sessions: { type: integer }
+        energy_by_day:
+          type: array
+          items:
+            type: object
+            properties:
+              date: { type: string, format: date }
+              kwh: { type: number, format: double }
+        revenue_by_day:
+          type: array
+          items:
+            type: object
+            properties:
+              date: { type: string, format: date }
+              amount: { type: number, format: double }
+
+    # -------- Tariffs Schemas --------
+    TariffSummary:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        status:
+          type: string
+          enum: [active, draft, archived]
+        currency: { type: string, example: BRL }
+        energy_price_per_kwh: { type: number, format: double }
+        created_at: { type: string, format: date-time }
+
+    Tariff:
+      allOf:
+        - $ref: '#/components/schemas/TariffSummary'
+        - type: object
+          properties:
+            start_fee: { type: number, format: double, nullable: true }
+            idle_fee_per_minute: { type: number, format: double, nullable: true }
+            updated_at: { type: string, format: date-time }
+
+    TariffUpsert:
+      type: object
+      properties:
+        name: { type: string }
+        status:
+          type: string
+          enum: [active, draft, archived]
+        currency: { type: string, example: BRL }
+        energy_price_per_kwh: { type: number, format: double }
+        start_fee: { type: number, format: double, nullable: true }
+        idle_fee_per_minute: { type: number, format: double, nullable: true }
+      required: [name, status, currency, energy_price_per_kwh]
+
+    TariffPreviewRequest:
+      type: object
+      properties:
+        tariff_id: { type: integer, format: int64, nullable: true }
+        charge_box_id: { type: string, nullable: true }
+        started_at: { type: string, format: date-time }
+        stopped_at: { type: string, format: date-time, nullable: true }
+        energy_kwh: { type: number, format: double }
+        duration_seconds: { type: integer, format: int32 }
+        idle_seconds: { type: integer, format: int32, nullable: true }
+      required: [started_at, energy_kwh, duration_seconds]
+
+    TariffPreviewResponse:
+      type: object
+      properties:
+        currency: { type: string, example: BRL }
+        total_amount: { type: number, format: double }
+        breakdown:
+          type: object
+          properties:
+            energy_cost: { type: number, format: double }
+            start_fee: { type: number, format: double, nullable: true }
+            idle_cost: { type: number, format: double, nullable: true }
+
+    # -------- Billing Schemas --------
+    InvoiceSummary:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        status:
+          type: string
+          enum: [issued, paid, cancelled]
+        amount: { type: number, format: double }
+        currency: { type: string, example: BRL }
+        issued_at: { type: string, format: date-time }
+
+    Invoice:
+      allOf:
+        - $ref: '#/components/schemas/InvoiceSummary'
+        - type: object
+          properties:
+            session_transaction_id: { type: integer, format: int32, nullable: true }
+            charge_box_id: { type: string, nullable: true }
+            id_tag: { type: string, nullable: true }
+            energy_kwh: { type: number, format: double, nullable: true }
+            due_at: { type: string, format: date-time, nullable: true }
+            paid_at: { type: string, format: date-time, nullable: true }
+            metadata:
+              type: object
+              additionalProperties: true
