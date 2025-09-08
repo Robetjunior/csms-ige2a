@@ -1,0 +1,61 @@
+# .github/workflows/deploy.yml
+name: Deploy Orchestrator to steve-vm
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-orchestrator
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (just to have the SHA/metadata)
+        uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_IP }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          port: ${{ secrets.VM_SSH_PORT || 22 }}
+          script_stop: true
+          command_timeout: 30m
+          script: |
+            set -Eeuo pipefail
+
+            echo "==> Entrando no diretório do app"
+            cd /opt/csms/app
+
+            echo "==> Garantindo que estamos na branch main e atualizados"
+            git fetch --all --prune
+            # Se o diretório já estiver limpo, isso apenas realinha com o remoto
+            git checkout -q main || true
+            git reset --hard origin/main
+
+            echo "==> Mostrando último commit"
+            git --no-pager log -1 --pretty=oneline
+
+            echo "==> Atualizando serviços (pull opcional se houver imagens no compose)"
+            docker compose pull || true
+
+            echo "==> Subindo somente o serviço do Orchestrator"
+            docker compose up -d orchestrator
+
+            echo "==> Aguardando o container ficar pronto"
+            # espera simples para o serviço inicializar
+            sleep 5
+
+            echo "==> Health-check do Orchestrator"
+            if ! curl -sf http://127.0.0.1:3000/health | grep -q '"ok":true'; then
+              echo "Health-check falhou. Últimas linhas dos logs:"
+              docker compose logs --no-color --tail=200 orchestrator || true
+              exit 1
+            fi
+
+            echo "==> OK! Orchestrator atualizado e saudável"
