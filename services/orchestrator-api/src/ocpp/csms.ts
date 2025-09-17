@@ -1,3 +1,4 @@
+// services/orchestrator-api/src/ocpp/csms.ts
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
@@ -33,6 +34,7 @@ export class OcppCsms extends EventEmitter {
   getConnectorStatuses(cbid: string) { return this.registry.getConnectorStatuses(cbid); }
   getLastHeartbeat(cbid: string) { return this.registry.getLastHeartbeat(cbid); }
   listOnline(): string[] { return this.registry.listPeers(); }
+  getStatusSnapshot(cbid: string) { return this.registry.getStatusSnapshot(cbid); }
 
   /** Sobe o servidor OCPP sobre o mesmo HTTP server do Express */
   start(server: http.Server) {
@@ -170,14 +172,18 @@ export class OcppCsms extends EventEmitter {
         }
 
         case 'StartTransaction': {
+          // OCPP 1.6: CSMS retorna o transactionId
           const startedAt = p?.timestamp ? new Date(p.timestamp) : new Date();
           let transactionId = Math.floor(Date.now() / 1000) % 1_000_000_000;
           if (transactionId <= 0) transactionId = 1;
 
+          // vincula o tx ao CP
           this.registry.bindTx(transactionId, chargeBoxId);
 
+          // responde ao CP
           ok({ transactionId, idTagInfo: { status: 'Accepted' } });
 
+          // persiste
           try {
             await upsertSessionStart({ transactionId, chargeBoxId, idTag: p?.idTag ?? null, startedAt });
           } catch (e:any) { console.warn('[OCPP] upsertSessionStart falhou:', e?.message || e); }
@@ -195,9 +201,23 @@ export class OcppCsms extends EventEmitter {
         }
 
         case 'MeterValues': {
+          // ACK vazio conforme OCPP 1.6
           ack();
+
+          // Se vier transactionId do CP, garanta o binding
+          const tx = Number(p?.transactionId);
+          if (Number.isFinite(tx) && tx > 0) {
+            this.registry.bindTx(tx, chargeBoxId);
+          }
+
           try {
-            await insertEvento({ tipo: 'MeterValues', payload: p, chargeBoxId, idTag: null, transactionId: p?.transactionId ?? null });
+            await insertEvento({
+              tipo: 'MeterValues',
+              payload: p,
+              chargeBoxId,
+              idTag: null,
+              transactionId: Number.isFinite(tx) && tx > 0 ? tx : null
+            });
           } catch (e:any) { console.warn('[OCPP] insertEvento MeterValues falhou:', e?.message || e); }
           return;
         }
@@ -206,7 +226,8 @@ export class OcppCsms extends EventEmitter {
           const tx = Number(p?.transactionId);
           const stoppedAt = p?.timestamp ? new Date(p.timestamp) : new Date();
 
-          ack(); // sempre responder rápido
+          // responde rápido
+          ack();
 
           try {
             await stopSession({ transactionId: tx, stoppedAt, stopReason: p?.reason ?? 'Local' });

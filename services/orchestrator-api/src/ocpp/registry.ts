@@ -3,20 +3,23 @@ import { WebSocket } from 'ws';
 
 export type CbId = string;
 
-type ConnectorState = {
+export type ConnectorState = {
   status: string;
   errorCode: string;
   updatedAt: string; // ISO
 };
 
 export class ConnectionRegistry {
-  private peers = new Map<CbId, WebSocket>();               // chargeBoxId -> WebSocket
-  private txOwner = new Map<number, CbId>();                 // transactionId -> chargeBoxId
-  private lastTxByCbid = new Map<CbId, number>();            // chargeBoxId -> last tx id
+  // WS por chargeBoxId
+  private peers = new Map<CbId, WebSocket>();
+  // TX -> owner (cbid)
+  private txOwner = new Map<number, CbId>();
+  // Último TX visto por chargeBoxId
+  private lastTxByCbid = new Map<CbId, number>();
 
-  // Status em memória (debug/observabilidade)
-  private connector = new Map<CbId, Map<number, ConnectorState>>(); // cbid -> (connectorId -> state)
-  private lastHeartbeat = new Map<CbId, string>();                  // cbid -> ISO time
+  // Status e heartbeat em memória (debug)
+  private connector = new Map<CbId, Map<number, ConnectorState>>();
+  private lastHeartbeat = new Map<CbId, string>();
 
   /* ========== Peers (WS) ========== */
   setPeer(cbid: CbId, ws: WebSocket) { this.peers.set(cbid, ws); }
@@ -27,19 +30,27 @@ export class ConnectionRegistry {
 
   /* ========== TX owner bindings ========== */
   bindTx(tx: number, cbid: CbId) {
+    if (!Number.isFinite(tx) || tx <= 0) return;
     this.txOwner.set(tx, cbid);
     this.lastTxByCbid.set(cbid, tx);
   }
   resolveTx(tx: number): CbId | undefined { return this.txOwner.get(tx); }
-  clearTx(tx: number) { this.txOwner.delete(tx); }
-
+  clearTx(tx: number) {
+    const cb = this.txOwner.get(tx);
+    if (cb) this.lastTxByCbid.delete(cb);
+    this.txOwner.delete(tx);
+  }
   listTxBindings(): Array<{ transactionId: number; chargeBoxId: CbId }> {
     return Array.from(this.txOwner.entries()).map(([transactionId, chargeBoxId]) => ({ transactionId, chargeBoxId }));
   }
-
   getLastTxForChargeBox(cbid: CbId): number | undefined {
     return this.lastTxByCbid.get(cbid);
   }
+
+  /* ==== Back-compat aliases (não quebrar chamadas antigas) ==== */
+  bindTransaction(tx: number, cbid: CbId) { this.bindTx(tx, cbid); }
+  unbindTransaction(tx: number) { this.clearTx(tx); }
+  getLastTx(cbid: CbId): number | undefined { return this.getLastTxForChargeBox(cbid); }
 
   /* ========== Status por conector ========== */
   setConnectorStatus(cbid: CbId, connectorId: number, status: string, errorCode = '', whenISO?: string) {
@@ -47,13 +58,11 @@ export class ConnectionRegistry {
     m.set(connectorId, { status, errorCode, updatedAt: whenISO ?? new Date().toISOString() });
     this.connector.set(cbid, m);
   }
-
   getConnectorStatuses(cbid: CbId): Array<{ connectorId: number } & ConnectorState> {
     const m = this.connector.get(cbid);
     if (!m) return [];
     return Array.from(m.entries()).map(([connectorId, v]) => ({ connectorId, ...v }));
   }
-
   getConnectorStatus(cbid: CbId, connectorId: number): (ConnectorState & { connectorId: number }) | undefined {
     const m = this.connector.get(cbid);
     const v = m?.get(connectorId);
@@ -67,19 +76,23 @@ export class ConnectionRegistry {
   getHeartbeat(cbid: CbId): string | undefined {
     return this.lastHeartbeat.get(cbid);
   }
-  /** Alias para compatibilidade com os handlers HTTP existentes */
+  // Alias utilizado pelos handlers HTTP antigos
   getLastHeartbeat(cbid: CbId): string | undefined {
     return this.getHeartbeat(cbid);
   }
 
   /* ========== Snapshot para /debug/status ========== */
-  getStatusSnapshot(cbid: CbId) {
+  // Aceita um 2º argumento opcional para não quebrar calls antigas (ignorado).
+  getStatusSnapshot(cbid: CbId, _legacy?: unknown) {
     return {
       chargeBoxId: cbid,
       online: this.isOnline(cbid),
-      heartbeat: this.getHeartbeat(cbid) ?? null,
+      lastHeartbeat: this.getHeartbeat(cbid) ?? null,
       connectors: this.getConnectorStatuses(cbid),
       lastTransactionId: this.getLastTxForChargeBox(cbid) ?? null,
     };
   }
 }
+
+// Adapter para quem ainda importa OcppRegistry (continua funcionando)
+export class OcppRegistry extends ConnectionRegistry {}
