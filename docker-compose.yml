@@ -2,6 +2,7 @@ services:
   postgres:
     image: postgres:15
     container_name: csms_postgres
+    profiles: ["dev"]
     environment:
       POSTGRES_USER: csms
       POSTGRES_PASSWORD: csms
@@ -73,13 +74,11 @@ services:
       STEVE_DB_URL: jdbc:mariadb://mariadb:3306/steve
       STEVE_DB_USER: steve
       STEVE_DB_PASS: steve
-      # Limita o heap da JVM para ~300–500 MiB de uso:
-      # Xms = 256m (inicial), Xmx = 512m (máximo)
       JAVA_TOOL_OPTIONS: "-Xms256m -Xmx512m"
     ports:
       - "8180:8180"
     restart: unless-stopped
-    mem_limit: 600m     # folga para heap + overhead da JVM
+    mem_limit: 600m
     cpus: 1.5
 
   orchestrator:
@@ -89,28 +88,52 @@ services:
     volumes:
       - ./services/orchestrator-api:/app
       - /app/node_modules
+      - ./certs/corp-ca.crt:/usr/local/share/ca-certificates/corp-ca.crt:ro
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     environment:
       NODE_ENV: development
       TZ: UTC
       PORT: "3000"
-      POSTGRES_URI: postgresql://csms:csms@postgres:5432/csms
+
+      # DSN principal para o pool do Postgres usado pelo repo.ts
+      POSTGRES_URI: ${SUPABASE_DB_URL}
+      PG_POOL_MAX: "10"
+
+      # Ainda disponível se você usar o SDK HTTP do Supabase
+      SUPABASE_DB_URL: ${SUPABASE_DB_URL}
+      PG_SSL_REJECT_UNAUTHORIZED: "0"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+
+      SUPABASE_URL: https://nctwaraezhmznwindnvn.supabase.co
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+
+      # SteVe (MariaDB)
       MARIADB_HOST: mariadb
       MARIADB_PORT: "3306"
       MARIADB_USER: steve
       MARIADB_PASSWORD: steve
       MARIADB_DATABASE: steve
-      CHOKIDAR_USEPOLLING: "true"  
-      ORCH_API_KEY: minha_chave_super_secreta
+
+      # HTTP
+      CHOKIDAR_USEPOLLING: "true"
+      ORCH_API_KEY: ${ORCH_API_KEY:-minha_chave_super_secreta}
+
+      # Prioriza IPv4
+      NODE_OPTIONS: "--dns-result-order=ipv4first"
+
     command: >
-      sh -lc "corepack enable &&
+      sh -lc "apk add --no-cache ca-certificates &&
+              update-ca-certificates &&
+              corepack enable &&
               corepack prepare pnpm@10.14.0 --activate &&
               pnpm install &&
               pnpm dev"
     ports:
       - "3000:3000"
     depends_on:
-      postgres:
-        condition: service_healthy
       mariadb:
         condition: service_healthy
     healthcheck:
@@ -123,14 +146,12 @@ services:
     mem_limit: 256m
     cpus: 1.0
 
-  # Monitoramento de containers
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.47.2
     container_name: csms_cadvisor
     ports:
-      - "18081:8080"   # evita conflito com serviços que usam 8080
+      - "18081:8080"
     volumes:
-      # Montagens padrão recomendadas pelo projeto
       - /:/rootfs:ro
       - /var/run:/var/run:rw
       - /sys:/sys:ro
@@ -143,7 +164,6 @@ services:
     mem_limit: 256m
     cpus: 0.5
 
-  # Coletor de métricas (scrape do cAdvisor e de si próprio)
   prometheus:
     image: prom/prometheus:v2.55.0
     container_name: csms_prometheus
@@ -155,7 +175,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus:/etc/prometheus:ro
       - ./.data/prometheus:/prometheus
     depends_on:
       - cadvisor
@@ -163,7 +183,6 @@ services:
     mem_limit: 512m
     cpus: 0.75
 
-  # Visualização (dashboards)
   grafana:
     image: grafana/grafana:11.1.4
     container_name: csms_grafana
@@ -177,10 +196,22 @@ services:
       TZ: UTC
     volumes:
       - ./.data/grafana:/var/lib/grafana
-      # Se quiser provisionar datasources/dashboards automáticos, monte:
-      # - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
     restart: unless-stopped
     mem_limit: 256m
     cpus: 0.5
+
+  caddy:
+    image: caddy:2.7
+    container_name: csms_edge
+    restart: unless-stopped
+    depends_on:
+      - orchestrator
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./edge/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./edge/data:/data
+      - ./edge/config:/config

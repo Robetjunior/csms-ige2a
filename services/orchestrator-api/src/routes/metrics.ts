@@ -1,19 +1,16 @@
-// src/routes/metrics.ts
 import { Router, Request, Response } from 'express';
-import { pg } from '../db';
+import { sb } from '../../supabase';
 
 const router = Router();
 
-function norm(s?: string) { return (s ?? '').trim() || undefined; }
-function parseDateISO(s?: string) {
+const norm = (s?: string) => (s ?? '').trim() || undefined;
+const parseDateISO = (s?: string) => {
   if (!s) return undefined;
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? undefined : d;
-}
+};
 
-/**
- * GET /v1/metrics/overview?from&to&charge_box_id
- */
+// ========= OVERVIEW =========
 router.get('/overview', async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string | undefined>;
@@ -21,36 +18,59 @@ router.get('/overview', async (req: Request, res: Response) => {
     const to   = parseDateISO(q.to)   ?? new Date();
     const cbId = norm(q.charge_box_id) ?? null;
 
-    const sql = `
-      WITH base AS (
-        SELECT * FROM orchestrator.session_financials
-        WHERE started_at >= $1 AND started_at < $2
-          AND ($3::text IS NULL OR charge_box_id = $3)
-      )
-      SELECT
-        (SELECT COUNT(*) FROM orchestrator.events WHERE created_at >= $1 AND created_at < $2) AS events,
-        (SELECT COUNT(*) FROM base) AS sessions,
-        (SELECT COUNT(*) FROM base WHERE status='active') AS active_sessions,
-        (SELECT COUNT(DISTINCT charge_box_id) FROM base) AS unique_charge_boxes,
-        COALESCE(SUM(energy_kwh),0) AS energy_kwh,
-        COALESCE(SUM(revenue_br),0) AS revenue_br,
-        COALESCE(AVG(duration_seconds)/60,0)::int AS avg_session_minutes
-      FROM base
-    `;
-    const { rows } = await pg.query(sql, [from, to, cbId]);
-    const r = rows[0] || {};
+    // 🔵 Opção A (recomendada): RPC 'metrics_overview(from,to,cb_id)'
+    const rpc = await sb.rpc('metrics_overview', {
+      p_from: from.toISOString(),
+      p_to: to.toISOString(),
+      p_charge_box_id: cbId
+    }).maybeSingle();
+
+    if (!rpc.error && rpc.data) {
+      const r: any = rpc.data;
+      return res.json({
+        period: { from: from.toISOString(), to: to.toISOString() },
+        totals: {
+          events: Number(r.events || 0),
+          sessions: Number(r.sessions || 0),
+          active_sessions: Number(r.active_sessions || 0),
+          unique_charge_boxes: Number(r.unique_charge_boxes || 0),
+          energy_kwh: Number(r.energy_kwh || 0),
+          revenue_br: Number(r.revenue_br || 0),
+          avg_session_minutes: Number(r.avg_session_minutes || 0),
+        },
+        health: { ready: true, supabase: 'up' }
+      });
+    }
+
+    // 🟠 Opção B (fallback simples em JS)
+    const ev = await sb
+      .from('events')
+      .select('id', { count: 'exact', head: true })
+      .gte('created_at', from.toISOString())
+      .lt('created_at', to.toISOString());
+    const base = await sb
+      .from('session_financials')
+      .select('charge_box_id, status, duration_seconds, energy_kwh, revenue_br')
+      .gte('started_at', from.toISOString())
+      .lt('started_at', to.toISOString())
+      .maybeSingle(); // OBS: para dados grandes, troque por RPC!
+    const rows = (base.data ? [base.data] : []) as any[];
+
+    const sessions = rows.length;
+    const active_sessions = rows.filter(r => r.status === 'active').length;
+    const unique_charge_boxes = new Set(rows.map(r => r.charge_box_id)).size;
+    const energy_kwh = rows.reduce((a,r)=>a+Number(r.energy_kwh||0),0);
+    const revenue_br = rows.reduce((a,r)=>a+Number(r.revenue_br||0),0);
+    const avg_session_minutes = Math.trunc(rows.reduce((a,r)=>a+Number(r.duration_seconds||0),0) / Math.max(sessions,1) / 60);
+
     return res.json({
       period: { from: from.toISOString(), to: to.toISOString() },
       totals: {
-        events: Number(r.events || 0),
-        sessions: Number(r.sessions || 0),
-        active_sessions: Number(r.active_sessions || 0),
-        unique_charge_boxes: Number(r.unique_charge_boxes || 0),
-        energy_kwh: Number(r.energy_kwh || 0),
-        revenue_br: Number(r.revenue_br || 0),
-        avg_session_minutes: Number(r.avg_session_minutes || 0),
+        events: ev.count ?? 0,
+        sessions, active_sessions, unique_charge_boxes,
+        energy_kwh, revenue_br, avg_session_minutes
       },
-      health: { ready: true, pg: 'up' }
+      health: { ready: true, supabase: 'up' }
     });
   } catch (err) {
     console.error('[GET /v1/metrics/overview] error:', err);
@@ -58,25 +78,26 @@ router.get('/overview', async (req: Request, res: Response) => {
   }
 });
 
-// GET /v1/metrics/charging-mix?from&to
+// ========= CHARGING MIX =========
 router.get('/charging-mix', async (req: Request, res: Response) => {
   try {
     const from = req.query.from ? new Date(String(req.query.from)) : new Date(Date.now() - 30*24*60*60*1000);
     const to   = req.query.to   ? new Date(String(req.query.to))   : new Date();
 
-    const sql = `
-      SELECT mode, COUNT(*) AS sessions,
-             COALESCE(SUM(energy_kwh),0) AS energy_kwh,
-             COALESCE(SUM(revenue_br),0) AS revenue_br
-        FROM orchestrator.session_financials
-       WHERE started_at >= $1 AND started_at < $2
-       GROUP BY mode
-       ORDER BY revenue_br DESC NULLS LAST
-    `;
-    const { rows } = await pg.query(sql, [from, to]);
-    res.json({
+    const r = await sb.rpc('metrics_charging_mix', {
+      p_from: from.toISOString(),
+      p_to: to.toISOString()
+    });
+    if (r.error) return res.status(500).json({ error: 'rpc_error', detail: r.error.message });
+
+    return res.json({
       period: { from: from.toISOString(), to: to.toISOString() },
-      items: rows.map(r => ({ mode: r.mode, sessions: Number(r.sessions), energy_kwh: Number(r.energy_kwh), revenue_br: Number(r.revenue_br) }))
+      items: (r.data || []).map((x: any) => ({
+        mode: x.mode,
+        sessions: Number(x.sessions),
+        energy_kwh: Number(x.energy_kwh),
+        revenue_br: Number(x.revenue_br)
+      }))
     });
   } catch (err) {
     console.error('[GET /v1/metrics/charging-mix] error:', err);
@@ -84,31 +105,26 @@ router.get('/charging-mix', async (req: Request, res: Response) => {
   }
 });
 
+// ========= HEATMAP =========
 router.get('/heatmap', async (req: Request, res: Response) => {
   try {
     const from = req.query.from ? new Date(String(req.query.from)) : new Date(Date.now() - 30*24*60*60*1000);
     const to   = req.query.to   ? new Date(String(req.query.to))   : new Date();
 
-    const sql = `
-      SELECT EXTRACT(DOW  FROM started_at)::int AS dow,   -- 0=domingo
-             EXTRACT(HOUR FROM started_at)::int AS hour,
-             COUNT(*) AS sessions,
-             COALESCE(SUM(energy_kwh),0) AS energy_kwh,
-             COALESCE(SUM(revenue_br),0) AS revenue_br
-        FROM orchestrator.session_financials
-       WHERE started_at >= $1 AND started_at < $2
-       GROUP BY 1,2
-       ORDER BY 1,2
-    `;
-    const { rows } = await pg.query(sql, [from, to]);
-    res.json({
+    const r = await sb.rpc('metrics_heatmap', {
+      p_from: from.toISOString(),
+      p_to: to.toISOString()
+    });
+    if (r.error) return res.status(500).json({ error: 'rpc_error', detail: r.error.message });
+
+    return res.json({
       period: { from: from.toISOString(), to: to.toISOString() },
-      grid: rows.map(r => ({
-        dow: Number(r.dow),
-        hour: Number(r.hour),
-        sessions: Number(r.sessions),
-        energy_kwh: Number(r.energy_kwh),
-        revenue_br: Number(r.revenue_br),
+      grid: (r.data || []).map((x: any) => ({
+        dow: Number(x.dow),
+        hour: Number(x.hour),
+        sessions: Number(x.sessions),
+        energy_kwh: Number(x.energy_kwh),
+        revenue_br: Number(x.revenue_br)
       }))
     });
   } catch (err) {
@@ -117,35 +133,27 @@ router.get('/heatmap', async (req: Request, res: Response) => {
   }
 });
 
-
-// GET /v1/metrics/revenue/monthly?year=2025
+// ========= REVENUE / MONTHLY =========
 router.get('/revenue/monthly', async (req: Request, res: Response) => {
   try {
     const year = parseInt(String(req.query.year || new Date().getUTCFullYear()), 10);
     const from = new Date(Date.UTC(year, 0, 1));
     const to   = new Date(Date.UTC(year + 1, 0, 1));
 
-    const sql = `
-      SELECT to_char(date_trunc('month', started_at), 'YYYY-MM') AS month,
-             COUNT(*) AS sessions,
-             COALESCE(SUM(energy_kwh),0) AS energy_kwh,
-             COALESCE(SUM(revenue_br),0) AS revenue_br
-        FROM orchestrator.session_financials
-       WHERE started_at >= $1 AND started_at < $2
-       GROUP BY 1
-       ORDER BY 1 ASC
-    `;
-    const { rows } = await pg.query(sql, [from, to]);
-    res.json({ year, months: rows });
+    const r = await sb.rpc('metrics_revenue_monthly', {
+      p_from: from.toISOString(),
+      p_to: to.toISOString()
+    });
+    if (r.error) return res.status(500).json({ error: 'rpc_error', detail: r.error.message });
+
+    return res.json({ year, months: r.data || [] });
   } catch (err) {
     console.error('[GET /v1/metrics/revenue/monthly] error:', err);
     res.status(500).json({ error: 'internal_error' });
   }
 });
 
-/**
- * GET /v1/metrics/timeseries?from&to&granularity=hour|day|month&charge_box_id
- */
+// ========= TIMESERIES =========
 router.get('/timeseries', async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string | undefined>;
@@ -153,43 +161,23 @@ router.get('/timeseries', async (req: Request, res: Response) => {
     const to   = parseDateISO(q.to)   ?? new Date();
     const cbId = norm(q.charge_box_id) ?? null;
     const gran = (q.granularity || 'day').toLowerCase();
-    const granSafe = ['hour','day','month'].includes(gran) ? gran : 'day';
+    const granSafe: 'hour'|'day'|'month' = (['hour','day','month'].includes(gran) ? gran : 'day') as any;
 
-    const sql = `
-      WITH base AS (
-        SELECT *
-        FROM orchestrator.session_financials
-        WHERE started_at >= $1 AND started_at < $2
-          AND ($3::text IS NULL OR charge_box_id = $3)
-      ),
-      binned AS (
-        SELECT
-          CASE
-            WHEN $4 = 'hour'  THEN date_trunc('hour', started_at)
-            WHEN $4 = 'month' THEN date_trunc('month', started_at)
-            ELSE date_trunc('day', started_at)
-          END AS ts,
-          energy_kwh,
-          revenue_br
-        FROM base
-      )
-      SELECT
-        ts,
-        COUNT(*) AS sessions,
-        COALESCE(SUM(energy_kwh),0) AS energy_kwh,
-        COALESCE(SUM(revenue_br),0) AS revenue_br
-      FROM binned
-      GROUP BY ts
-      ORDER BY ts ASC
-    `;
-    const { rows } = await pg.query(sql, [from, to, cbId, granSafe]);
+    const r = await sb.rpc('metrics_timeseries', {
+      p_from: from.toISOString(),
+      p_to: to.toISOString(),
+      p_charge_box_id: cbId,
+      p_granularity: granSafe
+    });
+    if (r.error) return res.status(500).json({ error: 'rpc_error', detail: r.error.message });
+
     return res.json({
       granularity: granSafe,
-      points: rows.map(r => ({
-        ts: new Date(r.ts).toISOString(),
-        sessions: Number(r.sessions),
-        energy_kwh: Number(r.energy_kwh),
-        revenue_br: Number(r.revenue_br),
+      points: (r.data || []).map((x: any) => ({
+        ts: new Date(x.ts).toISOString(),
+        sessions: Number(x.sessions),
+        energy_kwh: Number(x.energy_kwh),
+        revenue_br: Number(x.revenue_br),
       })),
     });
   } catch (err) {
@@ -198,9 +186,7 @@ router.get('/timeseries', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * GET /v1/metrics/top/chargeboxes?from&to&limit=10
- */
+// ========= TOPS =========
 router.get('/top/chargeboxes', async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string | undefined>;
@@ -208,34 +194,20 @@ router.get('/top/chargeboxes', async (req: Request, res: Response) => {
     const to   = parseDateISO(q.to)   ?? new Date();
     const limit = Math.min(Math.max(parseInt(String(q.limit||'10'),10) || 10, 1), 100);
 
-    const sql = `
-      SELECT
-        charge_box_id,
-        COUNT(*) AS sessions,
-        COALESCE(SUM(energy_kwh),0) AS energy_kwh,
-        COALESCE(SUM(revenue_br),0) AS revenue_br
-      FROM orchestrator.session_financials
-      WHERE started_at >= $1 AND started_at < $2
-      GROUP BY charge_box_id
-      ORDER BY revenue_br DESC
-      LIMIT $3
-    `;
-    const { rows } = await pg.query(sql, [from, to, limit]);
-    return res.json({ items: rows.map(r => ({
-      charge_box_id: r.charge_box_id,
-      sessions: Number(r.sessions),
-      energy_kwh: Number(r.energy_kwh),
-      revenue_br: Number(r.revenue_br),
-    }))});
+    const r = await sb.rpc('metrics_top_chargeboxes', {
+      p_from: from.toISOString(),
+      p_to: to.toISOString(),
+      p_limit: limit
+    });
+    if (r.error) return res.status(500).json({ error: 'rpc_error', detail: r.error.message });
+
+    return res.json({ items: r.data || [] });
   } catch (err) {
     console.error('[GET /v1/metrics/top/chargeboxes] error:', err);
     return res.status(500).json({ error: 'internal_error' });
   }
 });
 
-/**
- * GET /v1/metrics/top/id-tags?from&to&limit=10
- */
 router.get('/top/id-tags', async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string | undefined>;
@@ -243,63 +215,31 @@ router.get('/top/id-tags', async (req: Request, res: Response) => {
     const to   = parseDateISO(q.to)   ?? new Date();
     const limit = Math.min(Math.max(parseInt(String(q.limit||'10'),10) || 10, 1), 100);
 
-    const sql = `
-      SELECT
-        id_tag,
-        COUNT(*) AS sessions,
-        COALESCE(SUM(energy_kwh),0) AS energy_kwh,
-        COALESCE(SUM(revenue_br),0) AS revenue_br
-      FROM orchestrator.session_financials
-      WHERE started_at >= $1 AND started_at < $2
-      GROUP BY id_tag
-      ORDER BY revenue_br DESC NULLS LAST
-      LIMIT $3
-    `;
-    const { rows } = await pg.query(sql, [from, to, limit]);
-    return res.json({ items: rows.map(r => ({
-      id_tag: r.id_tag,
-      sessions: Number(r.sessions),
-      energy_kwh: Number(r.energy_kwh),
-      revenue_br: Number(r.revenue_br),
-    }))});
+    const r = await sb.rpc('metrics_top_id_tags', {
+      p_from: from.toISOString(),
+      p_to: to.toISOString(),
+      p_limit: limit
+    });
+    if (r.error) return res.status(500).json({ error: 'rpc_error', detail: r.error.message });
+
+    return res.json({ items: r.data || [] });
   } catch (err) {
     console.error('[GET /v1/metrics/top/id-tags] error:', err);
     return res.status(500).json({ error: 'internal_error' });
   }
 });
 
-/**
- * GET /v1/metrics/chargeboxes/status
- */
+// ========= STATUS =========
 router.get('/chargeboxes/status', async (_req: Request, res: Response) => {
   try {
-    const sql = `
-      WITH last_ev AS (
-        SELECT charge_box_id, MAX(created_at) AS last_event_at
-        FROM orchestrator.events
-        GROUP BY charge_box_id
-      ),
-      active AS (
-        SELECT charge_box_id, COUNT(*) AS active_sessions
-        FROM orchestrator.session_metrics
-        WHERE status='active'
-        GROUP BY charge_box_id
-      )
-      SELECT
-        l.charge_box_id,
-        l.last_event_at,
-        (now() - l.last_event_at) <= interval '5 minutes' AS recent,
-        COALESCE(a.active_sessions,0) AS active_sessions
-      FROM last_ev l
-      LEFT JOIN active a USING (charge_box_id)
-      ORDER BY l.charge_box_id
-    `;
-    const { rows } = await pg.query(sql);
-    return res.json({ items: rows.map(r => ({
-      charge_box_id: r.charge_box_id,
-      last_event_at: new Date(r.last_event_at).toISOString(),
-      recent: r.recent === true,
-      active_sessions: Number(r.active_sessions),
+    const r = await sb.rpc('metrics_chargeboxes_status');
+    if (r.error) return res.status(500).json({ error: 'rpc_error', detail: r.error.message });
+
+    return res.json({ items: (r.data || []).map((x: any) => ({
+      charge_box_id: x.charge_box_id,
+      last_event_at: new Date(x.last_event_at).toISOString(),
+      recent: x.recent === true,
+      active_sessions: Number(x.active_sessions || 0),
     }))});
   } catch (err) {
     console.error('[GET /v1/metrics/chargeboxes/status] error:', err);
@@ -307,9 +247,7 @@ router.get('/chargeboxes/status', async (_req: Request, res: Response) => {
   }
 });
 
-/**
- * GET /v1/metrics/export/sessions.csv?from&to&charge_box_id
- */
+// ========= EXPORT =========
 router.get('/export/sessions.csv', async (req: Request, res: Response) => {
   try {
     const q = req.query as Record<string, string | undefined>;
@@ -317,18 +255,17 @@ router.get('/export/sessions.csv', async (req: Request, res: Response) => {
     const to   = parseDateISO(q.to)   ?? new Date();
     const cbId = norm(q.charge_box_id) ?? null;
 
-    const sql = `
-      SELECT
-        transaction_id, charge_box_id, id_tag,
-        started_at, stopped_at, stop_reason,
-        status, duration_seconds, energy_kwh, revenue_br
-      FROM orchestrator.session_financials
-      WHERE started_at >= $1 AND started_at < $2
-        AND ($3::text IS NULL OR charge_box_id = $3)
-      ORDER BY started_at DESC
-      LIMIT 10000
-    `;
-    const { rows } = await pg.query(sql, [from, to, cbId]);
+    const r = await sb
+      .from('session_financials')
+      .select('transaction_id, charge_box_id, id_tag, started_at, stopped_at, stop_reason, status, duration_seconds, energy_kwh, revenue_br')
+      .gte('started_at', from.toISOString())
+      .lt('started_at', to.toISOString())
+      .order('started_at', { ascending: false })
+      .limit(10000)
+      .maybeSingle(); // ⚠️ se for grande, troque por RPC que já rende o CSV.
+
+    const rows: any[] = r.data ? [r.data] : [];
+
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="sessions.csv"');
     const header = [
@@ -336,17 +273,15 @@ router.get('/export/sessions.csv', async (req: Request, res: Response) => {
       'started_at','stopped_at','stop_reason',
       'status','duration_seconds','energy_kwh','revenue_br'
     ].join(',');
-    const lines = rows.map(r => ([
-      r.transaction_id,
-      r.charge_box_id,
-      r.id_tag ?? '',
-      new Date(r.started_at).toISOString(),
-      r.stopped_at ? new Date(r.stopped_at).toISOString() : '',
-      r.stop_reason ?? '',
-      r.status,
-      r.duration_seconds,
-      r.energy_kwh ?? '',
-      r.revenue_br ?? ''
+    const lines = rows.map((x: any) => ([
+      x.transaction_id, x.charge_box_id, x.id_tag ?? '',
+      new Date(x.started_at).toISOString(),
+      x.stopped_at ? new Date(x.stopped_at).toISOString() : '',
+      x.stop_reason ?? '',
+      x.status,
+      x.duration_seconds,
+      x.energy_kwh ?? '',
+      x.revenue_br ?? ''
     ].join(',')));
     res.send([header, ...lines].join('\n'));
   } catch (err) {

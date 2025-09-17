@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { pg } from '../db';
+import { sb } from '../../supabase';
 
 const router = Router();
 
@@ -25,15 +25,20 @@ const CloseSchema = z.object({
   stopped_at: z.string().datetime().optional()
 });
 
+// POST /v1/billing/estimate
 router.post('/estimate', async (req: Request, res: Response) => {
-  // atalho para /tariffs/preview, mas mantido por semântica
   const { charge_box_id, connector_id, mode='AC', expected_kwh=0, expected_minutes=0, active_at } = req.body || {};
   const at = active_at ? new Date(active_at) : new Date();
 
-  const { rows } = await pg.query(`SELECT * FROM orchestrator.resolve_tariff($1,$2,$3)`, [charge_box_id ?? null, String(mode).toUpperCase(), at]);
-  if (!rows.length) return res.status(404).json({ error: 'tariff_not_found' });
-  const t = rows[0];
+  const rt = await sb.rpc('resolve_tariff', {
+    p_charge_box_id: charge_box_id ?? null,
+    p_mode: String(mode).toUpperCase(),
+    p_at: at.toISOString(),
+  });
+  if (rt.error) return res.status(500).json({ error: 'rpc_error', detail: rt.error.message });
+  if (!rt.data?.length) return res.status(404).json({ error: 'tariff_not_found' });
 
+  const t = rt.data[0];
   const kwh = Math.max(Number(expected_kwh||0),0);
   const minutes = Math.max(Number(expected_minutes||0),0);
 
@@ -56,6 +61,7 @@ router.post('/estimate', async (req: Request, res: Response) => {
   });
 });
 
+// POST /v1/billing/start
 router.post('/start', async (req: Request, res: Response) => {
   const parsed = StartSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'invalid_payload', details: parsed.error.issues });
@@ -64,10 +70,14 @@ router.post('/start', async (req: Request, res: Response) => {
   const started_at = b.started_at ? new Date(b.started_at) : new Date();
   const mode = (b.mode ?? 'AC').toUpperCase();
 
-  // resolve tarifa
-  const { rows: tariffRows } = await pg.query(`SELECT * FROM orchestrator.resolve_tariff($1,$2,$3)`, [b.charge_box_id, mode, started_at]);
-  if (!tariffRows.length) return res.status(404).json({ error: 'tariff_not_found' });
-  const t = tariffRows[0];
+  const rt = await sb.rpc('resolve_tariff', {
+    p_charge_box_id: b.charge_box_id,
+    p_mode: mode,
+    p_at: started_at.toISOString(),
+  });
+  if (rt.error) return res.status(500).json({ error: 'rpc_error', detail: rt.error.message });
+  if (!rt.data?.length) return res.status(404).json({ error: 'tariff_not_found' });
+  const t = rt.data[0];
 
   const snapshot = {
     tariff_id: t.id,
@@ -78,48 +88,59 @@ router.post('/start', async (req: Request, res: Response) => {
     idle_grace_minutes: Number(t.idle_grace_minutes),
   };
 
-  // grava na sessão (upsert por transaction_id)
-  await pg.query(
-    `INSERT INTO orchestrator.sessions (transaction_id, charge_box_id, id_tag, connector_id, mode, started_at, pricing_snapshot)
-     VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
-     ON CONFLICT (transaction_id) DO UPDATE
-       SET charge_box_id=EXCLUDED.charge_box_id,
-           id_tag=COALESCE(EXCLUDED.id_tag, orchestrator.sessions.id_tag),
-           connector_id=COALESCE(EXCLUDED.connector_id, orchestrator.sessions.connector_id),
-           mode=EXCLUDED.mode,
-           started_at=LEAST(orchestrator.sessions.started_at, EXCLUDED.started_at),
-           pricing_snapshot=EXCLUDED.pricing_snapshot`,
-    [b.transaction_id, b.charge_box_id, b.id_tag ?? null, b.connector_id ?? null, mode, started_at, JSON.stringify(snapshot)]
-  );
+  const up = await sb
+    .from('sessions')
+    .upsert({
+      transaction_id: b.transaction_id,
+      charge_box_id: b.charge_box_id,
+      id_tag: b.id_tag ?? null,
+      connector_id: b.connector_id ?? null,
+      mode,
+      started_at: started_at.toISOString(),
+      pricing_snapshot: snapshot,
+    }, { onConflict: 'transaction_id' })
+    .select('transaction_id')
+    .single();
 
+  if (up.error) return res.status(500).json({ error: 'upsert_error', detail: up.error.message });
   return res.status(201).json({ transaction_id: b.transaction_id, pricing_snapshot: snapshot });
 });
 
+// POST /v1/billing/refresh
 router.post('/refresh', async (req: Request, res: Response) => {
   const parsed = RefreshSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'invalid_payload', details: parsed.error.issues });
   const b = parsed.data;
 
-  // tentar achar meterStart do StartTransaction; se não houver, 0
-  const { rows: startEv } = await pg.query(
-    `SELECT payload FROM orchestrator.ocpp_events
-      WHERE tipo='StartTransaction' AND transaction_id=$1
-      ORDER BY id ASC LIMIT 1`, [b.transaction_id]);
-  const meterStart = startEv.length ? Number(startEv[0].payload?.meterStart ?? 0) : 0;
+  const startEv = await sb
+    .from('ocpp_events')
+    .select('payload')
+    .eq('tipo','StartTransaction')
+    .eq('transaction_id', b.transaction_id)
+    .order('id', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (startEv.error) return res.status(500).json({ error: 'query_error', detail: startEv.error.message });
+  const meterStart = startEv.data ? Number((startEv.data as any).payload?.meterStart ?? 0) : 0;
 
   const kwh = Math.max(0, (b.meterLatest - meterStart) / 1000.0);
 
-  const { rows: sess } = await pg.query(
-    `SELECT pricing_snapshot, started_at FROM orchestrator.sessions WHERE transaction_id=$1 LIMIT 1`,
-    [b.transaction_id]
-  );
-  if (!sess.length) return res.status(404).json({ error: 'session_not_found' });
+  const sess = await sb
+    .from('sessions')
+    .select('pricing_snapshot, started_at')
+    .eq('transaction_id', b.transaction_id)
+    .limit(1)
+    .maybeSingle();
 
-  const snap = sess[0].pricing_snapshot || {};
-  const duration_seconds = Math.floor((Date.now() - new Date(sess[0].started_at).getTime())/1000);
+  if (sess.error) return res.status(500).json({ error: 'query_error', detail: sess.error.message });
+  if (!sess.data) return res.status(404).json({ error: 'session_not_found' });
+
+  const snap = (sess.data as any).pricing_snapshot || {};
+  const duration_seconds = Math.floor((Date.now() - new Date((sess.data as any).started_at).getTime())/1000);
 
   const energy_br = kwh * Number(snap.price_kwh ?? 0);
-  const idle_minutes = 0; // live simplificado (idle final é fechado no close)
+  const idle_minutes = 0;
   const idle_br = 0;
   const total_br = Number(snap.connection_fee ?? 0) + energy_br + idle_br;
 
@@ -132,126 +153,97 @@ router.post('/refresh', async (req: Request, res: Response) => {
   });
 });
 
+// POST /v1/billing/close
 router.post('/close', async (req: Request, res: Response) => {
   const parsed = CloseSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'invalid_payload', details: parsed.error.issues });
   const b = parsed.data;
 
-  const { rows: srows } = await pg.query(
-    `SELECT id, started_at, pricing_snapshot, charge_box_id, id_tag
-     FROM orchestrator.sessions WHERE transaction_id=$1 LIMIT 1`, [b.transaction_id]);
-  if (!srows.length) return res.status(404).json({ error: 'session_not_found' });
-  const s = srows[0];
+  const s = await sb
+    .from('sessions')
+    .select('id, started_at, pricing_snapshot, charge_box_id, id_tag')
+    .eq('transaction_id', b.transaction_id)
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (s.error) return res.status(500).json({ error: 'query_error', detail: s.error.message });
+  if (!s.data) return res.status(404).json({ error: 'session_not_found' });
 
   const stopped_at = b.stopped_at ? new Date(b.stopped_at) : new Date();
-  const duration_seconds = Math.max(0, Math.floor((stopped_at.getTime() - new Date(s.started_at).getTime())/1000));
+  const duration_seconds = Math.max(0, Math.floor((stopped_at.getTime() - new Date((s.data as any).started_at).getTime())/1000));
   const kwh = Math.max(0, (b.meterStop - b.meterStart) / 1000.0);
 
-  const snap = s.pricing_snapshot || {};
+  const snap = (s.data as any).pricing_snapshot || {};
   const energy_br = kwh * Number(snap.price_kwh ?? 0);
-  // idle simplificado = 0 (calcular via StatusNotification se disponível)
   const idle_minutes = 0;
   const idle_br = 0;
   const total_br = Number(snap.connection_fee ?? 0) + energy_br + idle_br;
 
-  // atualiza sessão e cria invoice
-  await pg.query(
-    `UPDATE orchestrator.sessions
-       SET stopped_at=$2, stop_reason=COALESCE(stop_reason,'Remote'),
-           energy_kwh=$3, revenue_br=$4
-     WHERE id=$1`, [s.id, stopped_at, kwh, total_br]
-  );
+  const upd = await sb
+    .from('sessions')
+    .update({ stopped_at: stopped_at.toISOString(), stop_reason: 'Remote', energy_kwh: kwh, revenue_br: total_br })
+    .eq('id', (s.data as any).id);
+  if (upd.error) return res.status(500).json({ error: 'update_error', detail: upd.error.message });
 
-  const { rows: inv } = await pg.query(
-    `INSERT INTO orchestrator.invoices
-      (session_fk, transaction_id, charge_box_id, id_tag, started_at, stopped_at,
-       energy_kwh, idle_minutes, total_br, breakdown)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
-     ON CONFLICT (session_fk) DO UPDATE
-       SET stopped_at=EXCLUDED.stopped_at,
-           energy_kwh=EXCLUDED.energy_kwh,
-           idle_minutes=EXCLUDED.idle_minutes,
-           total_br=EXCLUDED.total_br,
-           breakdown=EXCLUDED.breakdown
-     RETURNING id`,
-    [s.id, b.transaction_id, s.charge_box_id, s.id_tag,
-     s.started_at, stopped_at, kwh, idle_minutes, total_br,
-     JSON.stringify({ connection_br: Number(snap.connection_fee ?? 0), energy_br, idle_br, price_kwh: Number(snap.price_kwh ?? 0) })]
-  );
+  const inv = await sb
+    .from('invoices')
+    .upsert({
+      session_fk: (s.data as any).id,
+      transaction_id: b.transaction_id,
+      charge_box_id: (s.data as any).charge_box_id,
+      id_tag: (s.data as any).id_tag,
+      started_at: (s.data as any).started_at,
+      stopped_at: stopped_at.toISOString(),
+      energy_kwh: kwh,
+      idle_minutes,
+      total_br,
+      breakdown: { connection_br: Number(snap.connection_fee ?? 0), energy_br, idle_br, price_kwh: Number(snap.price_kwh ?? 0) }
+    }, { onConflict: 'session_fk' })
+    .select('id')
+    .single();
+
+  if (inv.error) return res.status(500).json({ error: 'upsert_invoice_error', detail: inv.error.message });
 
   return res.json({
     transaction_id: b.transaction_id,
-    invoice_id: inv[0].id,
+    invoice_id: inv.data.id,
     totals: { energy_kwh: kwh, duration_seconds, total_br },
   });
 });
 
-// GET /v1/billing/invoices?from&to&charge_box_id&id_tag&limit=100
+// GET /v1/billing/invoices
 router.get('/invoices', async (req: Request, res: Response) => {
   try {
-    // Helpers robustos
-    const pickFirst = <T,>(v: T | T[] | undefined | null): T | undefined => {
-      if (Array.isArray(v)) return v[0];
-      return v === undefined || v === null ? undefined : v;
-    };
-
+    const pickFirst = <T,>(v: T | T[] | undefined | null): T | undefined => Array.isArray(v) ? v[0] : (v ?? undefined);
     const parseISOorUnix = (v: unknown): Date | null => {
       const raw = pickFirst(v);
-
-      // vazio -> nulo
-      if (raw === undefined || raw === null) return null;
-
-      // number (ex.: 1692931200000) ou string-numérica (ex.: "1692931200000")
-      if (typeof raw === 'number' && Number.isFinite(raw)) {
-        const d = new Date(raw);
-        return Number.isFinite(d.getTime()) ? d : null;
-      }
+      if (raw == null) return null;
+      if (typeof raw === 'number' && Number.isFinite(raw)) return new Date(raw);
       if (typeof raw === 'string') {
-        const s = raw.trim();
-        if (!s) return null;
-
-        // tentar unix ms
-        if (/^\d{10,}$/.test(s)) {
-          const n = Number(s);
-          if (Number.isFinite(n)) {
-            const d = new Date(n);
-            return Number.isFinite(d.getTime()) ? d : null;
-          }
-        }
-
-        // tentar ISO
-        const d = new Date(s);
-        return Number.isFinite(d.getTime()) ? d : null;
+        const s = raw.trim(); if (!s) return null;
+        if (/^\d{10,}$/.test(s)) { const d = new Date(Number(s)); return Number.isFinite(d.getTime()) ? d : null; }
+        const d = new Date(s); return Number.isFinite(d.getTime()) ? d : null;
       }
-
-      // tipos não suportados
       return null;
     };
-
     const asTrimmedOrNull = (v: unknown): string | null => {
       const raw = pickFirst(v);
       if (typeof raw !== 'string') return null;
-      const t = raw.trim();
-      return t.length ? t : null;
+      const t = raw.trim(); return t.length ? t : null;
     };
-
     const asInt = (v: unknown, def = 100): number => {
       const raw = pickFirst(v);
-      if (typeof raw === 'string' && raw.trim() !== '') {
-        const n = parseInt(raw, 10);
-        if (Number.isFinite(n)) return n;
-      }
+      if (typeof raw === 'string' && raw.trim() !== '') { const n = parseInt(raw,10); if (Number.isFinite(n)) return n; }
       if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
       return def;
     };
 
-    // Query params (robustos)
     const fromQ = parseISOorUnix(req.query.from);
     const toQ   = parseISOorUnix(req.query.to);
-    const from  = fromQ ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const from  = fromQ ?? new Date(Date.now() - 30*24*60*60*1000);
     const to    = toQ   ?? new Date();
 
-    // validação clara: só acusa erro se o cliente MANDOU o param e ele é inválido
     if ((pickFirst(req.query.from) !== undefined && !fromQ) ||
         (pickFirst(req.query.to)   !== undefined && !toQ)) {
       return res.status(400).json({ error: 'invalid_query', details: 'from/to must be ISO-8601 or UNIX ms' });
@@ -259,22 +251,23 @@ router.get('/invoices', async (req: Request, res: Response) => {
 
     const cb    = asTrimmedOrNull(req.query.charge_box_id);
     const idTag = asTrimmedOrNull(req.query.id_tag);
+    const limit = Math.min(Math.max(asInt(req.query.limit, 100), 1), 1000);
 
-    const limitRaw = asInt(req.query.limit, 100);
-    const limit = Math.min(Math.max(limitRaw, 1), 1000);
+    let q = sb
+      .from('invoices')
+      .select('id, session_fk, transaction_id, charge_box_id, id_tag, started_at, stopped_at, energy_kwh, idle_minutes, total_br, breakdown')
+      .gte('started_at', from.toISOString())
+      .lt('started_at', to.toISOString())
+      .order('started_at', { ascending: false })
+      .limit(limit);
 
-    const sql = `
-      SELECT id, session_fk, transaction_id, charge_box_id, id_tag,
-             started_at, stopped_at, energy_kwh, idle_minutes, total_br, breakdown
-        FROM orchestrator.invoices
-       WHERE started_at >= $1 AND started_at < $2
-         AND ($3::text IS NULL OR charge_box_id = $3)
-         AND ($4::text IS NULL OR id_tag = $4)
-       ORDER BY started_at DESC
-       LIMIT $5
-    `;
-    const { rows } = await pg.query(sql, [from, to, cb, idTag, limit]);
-    return res.json({ items: rows });
+    if (cb) q = q.eq('charge_box_id', cb);
+    if (idTag) q = q.eq('id_tag', idTag);
+
+    const r = await q;
+    if (r.error) return res.status(500).json({ error: 'query_error', detail: r.error.message });
+
+    return res.json({ items: r.data });
   } catch (err) {
     console.error('[GET /v1/billing/invoices] error:', err);
     return res.status(500).json({ error: 'internal_error' });
@@ -284,22 +277,19 @@ router.get('/invoices', async (req: Request, res: Response) => {
 // GET /v1/billing/invoices/:id
 router.get('/invoices/:id', async (req, res) => {
   try {
-    const idStr = String(req.params.id ?? '').trim();
-    const id = Number(idStr);
-    if (!Number.isFinite(id) || id <= 0) {
-      return res.status(400).json({ error: 'invalid_id' });
-    }
+    const id = Number(String(req.params.id ?? '').trim());
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'invalid_id' });
 
-    const sql = `
-      SELECT id, session_fk, transaction_id, charge_box_id, id_tag,
-             started_at, stopped_at, energy_kwh, idle_minutes, total_br, breakdown
-        FROM orchestrator.invoices
-       WHERE id = $1::bigint
-       LIMIT 1
-    `;
-    const { rows } = await pg.query(sql, [id]);
-    if (!rows.length) return res.status(404).json({ error: 'not_found' });
-    return res.json(rows[0]);
+    const r = await sb
+      .from('invoices')
+      .select('id, session_fk, transaction_id, charge_box_id, id_tag, started_at, stopped_at, energy_kwh, idle_minutes, total_br, breakdown')
+      .eq('id', id)
+      .single();
+
+    if (r.error?.code === 'PGRST116') return res.status(404).json({ error: 'not_found' });
+    if (r.error) return res.status(500).json({ error: 'query_error', detail: r.error.message });
+
+    return res.json(r.data);
   } catch (err) {
     console.error('[GET /v1/billing/invoices/:id] error:', err);
     return res.status(500).json({ error: 'internal_error' });

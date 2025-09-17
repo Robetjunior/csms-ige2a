@@ -7,8 +7,23 @@ type InsertEventoArgs = {
   chargeBoxId: string | null;
   transactionId: number | null;
   idTag: string | null;
-  uniqueKey?: string; // mantido apenas para log/rastreamento
+  uniqueKey?: string; 
 };
+
+type DbEventRow = {
+  id: number;
+  created_at: string;           
+  source: string | null;
+  event_type: string | null;
+  charge_box_id: string | null;
+  connector_pk: number | null;
+  transaction_pk: number | null;
+  id_tag: string | null;
+  payload: any;                 
+  _total: string;               
+};
+
+type ApiEvent = Omit<DbEventRow, '_total'>;
 
 export async function insertEvento(args: InsertEventoArgs): Promise<{ duplicate: boolean }> {
   const { tipo, payload, chargeBoxId, idTag, uniqueKey: providedKey } = args;
@@ -215,7 +230,7 @@ export async function listEvents(args: {
   limit: number;
   offset: number;
   sort: 'asc' | 'desc';
-}) {
+}): Promise<{ count: number; items: ApiEvent[] }> {
   const {
     eventType, chargeBoxId, connectorPk, transactionPk, idTag, from, to, limit, offset, sort,
   } = args;
@@ -224,13 +239,13 @@ export async function listEvents(args: {
   const params: any[] = [];
   let i = 1;
 
-  if (eventType)      { where.push(`event_type   = $${i++}`); params.push(eventType); }
-  if (chargeBoxId)    { where.push(`charge_box_id = $${i++}`); params.push(chargeBoxId); }
-  if (connectorPk != null)   { where.push(`connector_pk   = $${i++}`); params.push(connectorPk); }
-  if (transactionPk != null) { where.push(`transaction_pk = $${i++}`); params.push(transactionPk); }
-  if (idTag)          { where.push(`id_tag        = $${i++}`); params.push(idTag); }
-  if (from)           { where.push(`created_at   >= $${i++}`); params.push(from.toISOString()); }
-  if (to)             { where.push(`created_at   <= $${i++}`); params.push(to.toISOString()); }
+  if (eventType)            { where.push(`event_type    = $${i++}`); params.push(eventType); }
+  if (chargeBoxId)          { where.push(`charge_box_id = $${i++}`); params.push(chargeBoxId); }
+  if (connectorPk != null)  { where.push(`connector_pk  = $${i++}`); params.push(connectorPk); }
+  if (transactionPk != null){ where.push(`transaction_pk= $${i++}`); params.push(transactionPk); }
+  if (idTag)                { where.push(`id_tag        = $${i++}`); params.push(idTag); }
+  if (from)                 { where.push(`created_at   >= $${i++}`); params.push(from.toISOString()); }
+  if (to)                   { where.push(`created_at   <= $${i++}`); params.push(to.toISOString()); }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
@@ -259,14 +274,22 @@ export async function listEvents(args: {
     console.log('[listEvents] whereSql=%s params=%o', whereSql, params);
   }
 
-  console.log('[listEvents] whereSql=%s params=%o', whereSql, params);
   try {
-    const { rows } = await pg.query(sql, params);
+    // ✅ Tipamos o resultado; _total virá como string
+    const { rows } = await pg.query<DbEventRow>(sql, params);
+
     const total = rows.length ? Number(rows[0]._total) : 0;
-    const items = rows.map(({ _total, ...r }) => r);
+
+    // ✅ Removemos _total de forma tipada
+    const items: ApiEvent[] = rows.map((row: any) => {
+      const { _total, ...rest } = row;
+      return rest;
+    });
+
     if ((process.env.NODE_ENV || '').toLowerCase() !== 'production') {
-      console.log('[listEvents] rows=%d', rows.length);
+      console.log('[listEvents] rows=%d total=%d', rows.length, total);
     }
+
     return { count: total, items };
   } catch (e: any) {
     console.error('[listEvents] QUERY FAILED:', {

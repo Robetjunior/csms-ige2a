@@ -1,240 +1,309 @@
 // src/routes/commands.ts
 import { Router, Request, Response } from 'express';
-import { Pool } from 'pg';
 import { z } from 'zod';
+import { sb } from '../../supabase';
+import { csms } from '../ocpp/csms';
 
 const router = Router();
 
-const pool = new Pool({
-  connectionString: process.env.POSTGRES_URI,
-});
-
-// ===== Schemas =====
-const RemoteStopSchema = z.object({
-  transactionId: z.number().int().positive(),
-});
-
+/* ===== Schemas ===== */
 const RemoteStartSchema = z.object({
   chargeBoxId: z.string().min(1),
   idTag: z.string().min(1),
   connectorId: z.number().int().positive().optional(),
-  reservationId: z.number().int().positive().optional(),
 });
 
-// ====== POST /v1/commands/remoteStart ======
-/**
- * POST /v1/commands/remoteStart
- * Headers (opcional): X-API-Key: <chave>
- * Body: { chargeBoxId: string; idTag: string; connectorId?: number; reservationId?: number }
- */
+const RemoteStopSchema = z.object({
+  transactionId: z.number().int().positive(),
+});
+
+const ChangeAvailabilitySchema = z.object({
+  chargeBoxId: z.string().min(1),
+  connectorId: z.number().int().nonnegative(), // 0 = todos
+  type: z.enum(['Operative','Inoperative']),
+});
+
+/* ===== RemoteStart ===== */
 router.post('/remoteStart', async (req: Request, res: Response) => {
-  // validação
   const parsed = RemoteStartSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
       error: 'invalid_payload',
-      details: parsed.error.issues.map((i: { path: any; message: any; }) => ({ path: i.path, message: i.message })),
+      details: parsed.error.issues.map(i => ({ path: i.path, message: i.message })),
     });
   }
+  const { chargeBoxId, idTag, connectorId } = parsed.data;
 
-  const { chargeBoxId, idTag, connectorId, reservationId } = parsed.data;
+  const force = String(req.query.force || '').toLowerCase() === '1' || String(req.query.force || '').toLowerCase() === 'true';
+  const RESEND_OLDER_THAN_MS = 15000; // reenvia automaticamente se o último "sent/pending" for mais velho que 15s
 
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  // Idempotência (com select incluindo timestamps)
+  let idem = sb
+    .from('commands')
+    .select('id,status,payload,created_at,updated_at')
+    .eq('command_type', 'RemoteStart')
+    .eq('charge_box_id', chargeBoxId)
+    .filter('payload->>idTag', 'eq', idTag)
+    .in('status', ['pending', 'sent', 'accepted'])
+    .order('id', { ascending: false })
+    .limit(1);
 
-    // idempotência: existe RemoteStart "vivo" p/ mesmo alvo?
-    const idemSql = `
-      SELECT id, status
-        FROM orchestrator.commands
-       WHERE command_type = 'RemoteStart'
-         AND charge_box_id = $1::text
-         AND payload->>'idTag' = $2
-         AND COALESCE((payload->>'connectorId')::int, 0) = COALESCE($3::int, 0)
-         AND status IN ('pending','sent','accepted')
-       ORDER BY id DESC
-       LIMIT 1
-    `;
-    const idem = await client.query(idemSql, [chargeBoxId, idTag, connectorId ?? null]);
-    if (idem.rowCount) {
-      await client.query('ROLLBACK');
-      const row = idem.rows[0];
-      return res.status(200).json({
-        commandId: row.id,
-        status: row.status,
-        idempotentDuplicate: true,
-      });
-    }
-
-    // inserir comando
-    const payload = {
-      idTag,
-      ...(connectorId ? { connectorId } : {}),
-      ...(reservationId ? { reservationId } : {}),
-    };
-
-    const insSql = `
-      INSERT INTO orchestrator.commands
-        (command_type, charge_box_id, requested_by, status, payload)
-      VALUES
-        ('RemoteStart', $1::text, 'api', 'pending', $2::jsonb)
-      RETURNING id
-    `;
-    const cres = await client.query(insSql, [chargeBoxId, JSON.stringify(payload)]);
-    const commandId: number = cres.rows[0].id;
-
-    // marca como 'sent' (envio ao CSMS/CP é assíncrono pelo worker)
-    await client.query(
-      `UPDATE orchestrator.commands
-          SET status='sent', updated_at=now()
-        WHERE id = $1::bigint`,
-      [commandId],
-    );
-
-    await client.query('COMMIT');
-    return res.status(202).json({
-      commandId,
-      status: 'sent',
-      message: 'RemoteStart solicitado. Aguarde confirmação do CSMS/CP.',
-    });
-  } catch (err: any) {
-    try { await client.query('ROLLBACK'); } catch {}
-    console.error('[remoteStart] error detail:', {
-      message: err?.message,
-      code: err?.code,
-      detail: err?.detail,
-      constraint: err?.constraint,
-      stack: err?.stack,
-    });
-    return res.status(500).json({ error: 'internal_error' });
-  } finally {
-    client.release();
+  if (typeof connectorId === 'number') {
+    idem = idem.filter('payload->>connectorId', 'eq', String(connectorId));
+  } else {
+    idem = idem.is('payload->connectorId', null);
   }
-});
 
-// ====== POST /v1/commands/remoteStop (o seu, com pequeno ajuste no finally) ======
-router.post('/remoteStop', async (req: Request, res: Response) => {
-  try {
-    const parsed = RemoteStopSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({
-        error: 'invalid_payload',
-        details: parsed.error.issues.map((i: { path: any; message: any; }) => ({ path: i.path, message: i.message })),
-      });
-    }
-    const tx = parsed.data.transactionId;
+  const idemRes = await idem;
+  if (idemRes.error) {
+    return res.status(500).json({ error: 'query_error', detail: idemRes.error.message });
+  }
 
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+  // Se já existe um comando igual "aberto"
+  if (idemRes.data?.length) {
+    const row = idemRes.data[0];
 
-      const sessionSql = `
-        SELECT id, transaction_id, charge_box_id, stopped_at
-          FROM orchestrator.sessions
-         WHERE transaction_id = $1::int
-         ORDER BY id DESC
-         LIMIT 1
-      `;
-      const sres = await client.query(sessionSql, [tx]);
-      if (sres.rowCount === 0) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({ error: 'Sessão não encontrada' });
-      }
-      const session = sres.rows[0];
-      if (session.stopped_at) {
-        await client.query('ROLLBACK');
-        return res.status(409).json({ error: 'Sessão já finalizada' });
-      }
+    // 1) Se FORCE, reenvia agora usando o mesmo row.id
+    // 2) Ou se o último "pending/sent" for velho, reenvia (TTL)
+    const lastTs = new Date(row.updated_at || row.created_at).getTime();
+    const ageMs = Date.now() - lastTs;
+    const shouldResend = force || (['pending','sent'].includes(row.status) && ageMs > RESEND_OLDER_THAN_MS);
 
-      const existing = await client.query(
-        `SELECT id, status
-           FROM orchestrator.commands
-          WHERE command_type='RemoteStop'
-            AND transaction_id=$1::int
-            AND status IN ('pending','sent','accepted')
-          ORDER BY id DESC
-          LIMIT 1`,
-        [tx],
-      );
-      if (existing.rowCount) {
-        const row = existing.rows[0];
-        await client.query('ROLLBACK');
-        return res.status(200).json({
+    if (shouldResend) {
+      try {
+        await csms.remoteStart(chargeBoxId, { idTag, connectorId });
+        await sb.from('commands')
+          .update({ status: 'sent', updated_at: new Date().toISOString() })
+          .eq('id', row.id);
+        return res.status(202).json({
           commandId: row.id,
-          status: row.status,
+          status: 'sent',
           idempotentDuplicate: true,
+          resent: true,
+          message: 'Reenviado ao CP (force/TTL).',
+        });
+      } catch (e:any) {
+        return res.status(409).json({
+          commandId: row.id,
+          status: 'pending',
+          idempotentDuplicate: true,
+          error: e?.message || 'charge_point_offline',
+          detail: e?.message || 'CP não conectado ao nosso CSMS',
         });
       }
-
-      const insSql = `
-        INSERT INTO orchestrator.commands
-          (command_type, transaction_id, charge_box_id, requested_by, status, payload, session_fk)
-        VALUES
-          ('RemoteStop', $1::int, $2::text, 'api', 'pending',
-           jsonb_build_object('transactionId', $1::int), $3::bigint)
-        RETURNING id
-      `;
-      const cres = await client.query(insSql, [tx, session.charge_box_id, session.id]);
-      const commandId: number = cres.rows[0].id;
-
-      await client.query(
-        `UPDATE orchestrator.commands SET status = 'sent', updated_at = now() WHERE id = $1::bigint`,
-        [commandId],
-      );
-
-      await client.query('COMMIT');
-      return res.status(202).json({
-        commandId,
-        status: 'sent',
-        message: 'RemoteStop solicitado. Aguarde confirmação do CSMS/CP.',
-      });
-    } catch (err: any) {
-      try { await pool.query('ROLLBACK'); } catch {}
-      console.error('[remoteStop] error:', err);
-      return res.status(500).json({ error: 'internal_error' });
-    } finally {
-      // ✅ correção: libere o MESMO client
-      try { (await client).release(); } catch { /* no-op */ }
     }
-  } catch (err: any) {
-    console.error('[remoteStop] outer error:', err);
-    return res.status(500).json({ error: 'internal_error' });
+
+    // Senão, mantém comportamento anterior
+    return res.status(200).json({ commandId: row.id, status: row.status, idempotentDuplicate: true });
+  }
+
+  // Não havia idempotente — insere e envia
+  const payload: any = { idTag };
+  if (connectorId != null) payload.connectorId = connectorId;
+
+  const ins = await sb
+    .from('commands')
+    .insert({
+      command_type: 'RemoteStart',
+      charge_box_id: chargeBoxId,
+      requested_by: 'api',
+      status: 'pending',
+      payload,
+    })
+    .select('id')
+    .single();
+
+  if (ins.error) {
+    return res.status(500).json({ error: 'insert_error', detail: ins.error.message });
+  }
+
+  try {
+    await csms.remoteStart(chargeBoxId, { idTag, connectorId });
+    await sb.from('commands')
+      .update({ status: 'sent', updated_at: new Date().toISOString() })
+      .eq('id', ins.data.id);
+    return res.status(202).json({
+      commandId: ins.data.id,
+      status: 'sent',
+      message: 'RemoteStart enviado ao CP conectado ao nosso CSMS.',
+    });
+  } catch (e: any) {
+    return res.status(409).json({
+      commandId: ins.data.id,
+      status: 'pending',
+      error: e?.message || 'charge_point_offline',
+      detail: e?.message || 'CP não conectado ao nosso CSMS',
+    });
   }
 });
 
-// ===== GETs já existentes… =====
+
+/* ===== RemoteStop ===== */
+router.post('/remoteStop', async (req: Request, res: Response) => {
+  const parsed = RemoteStopSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: 'invalid_payload',
+      details: parsed.error.issues.map(i => ({ path: i.path, message: i.message })),
+    });
+  }
+  const tx = parsed.data.transactionId;
+
+  // 🔎 tenta identificar o CP dono do tx (se ainda online)
+  const chargeBoxId = csms.resolveTx(tx);
+
+  // idempotência básica
+  const existing = await sb
+    .from('commands')
+    .select('id,status')
+    .eq('command_type','RemoteStop')
+    .eq('transaction_id', tx)
+    .in('status', ['pending','sent','accepted'])
+    .order('id', { ascending: false })
+    .limit(1);
+
+  if (existing.error) {
+    return res.status(500).json({ error: 'query_error', detail: existing.error.message });
+  }
+  if (existing.data?.length) {
+    const row = existing.data[0];
+    return res.status(200).json({ commandId: row.id, status: row.status, idempotentDuplicate: true });
+  }
+
+  // registra o comando com charge_box_id (quando conhecido)
+  const ins = await sb.from('commands').insert({
+    command_type: 'RemoteStop',
+    transaction_id: tx,
+    charge_box_id: chargeBoxId ?? null,  // ✅ NOVO
+    requested_by: 'api',
+    status: 'pending',
+    payload: { transactionId: tx },
+  }).select('id').single();
+
+  if (ins.error) {
+    return res.status(500).json({ error: 'insert_error', detail: ins.error.message });
+  }
+
+  try {
+    await csms.remoteStop(tx);
+    await sb.from('commands')
+      .update({ status: 'sent', updated_at: new Date().toISOString() })
+      .eq('id', ins.data.id);
+
+    return res.status(202).json({
+      commandId: ins.data.id,
+      status: 'sent',
+      message: 'RemoteStop enviado ao CP conectado ao nosso CSMS.',
+    });
+  } catch (e: any) {
+    return res.status(409).json({
+      commandId: ins.data.id,
+      status: 'pending',
+      error: 'charge_point_offline',
+      detail: e?.message || 'charge_point_offline',
+    });
+  }
+});
+
+/* ===== ChangeAvailability ===== */
+router.post('/changeAvailability', async (req: Request, res: Response) => {
+  const p = ChangeAvailabilitySchema.safeParse(req.body);
+  if (!p.success) return res.status(400).json({ error:'invalid_payload', details: p.error.issues });
+  const { chargeBoxId, connectorId, type } = p.data;
+
+  // idempotência
+  let q = sb.from('commands')
+    .select('id,status,payload')
+    .eq('command_type','ChangeAvailability')
+    .eq('charge_box_id', chargeBoxId)
+    .filter('payload->>connectorId','eq', String(connectorId))
+    .filter('payload->>type','eq', type)
+    .in('status',['pending','sent','accepted'])
+    .order('id',{ ascending:false })
+    .limit(1);
+
+  const idem = await q;
+  const force = String(req.query.force ?? '') === '1';
+
+  if (idem.error) return res.status(500).json({ error:'query_error', detail: idem.error.message });
+
+  let commandId: number | null = null;
+  if (idem.data?.length && !force) {
+    const row = idem.data[0];
+    return res.status(200).json({ commandId: row.id, status: row.status, idempotentDuplicate: true });
+  }
+
+  // cria (ou reaproveita com force)
+  if (!idem.data?.length) {
+    const ins = await sb.from('commands').insert({
+      command_type: 'ChangeAvailability',
+      charge_box_id: chargeBoxId,
+      status: 'pending',
+      requested_by: 'api',
+      payload: { connectorId, type }
+    }).select('id').single();
+    if (ins.error) return res.status(500).json({ error:'insert_error', detail: ins.error.message });
+    commandId = ins.data.id;
+  } else {
+    commandId = idem.data[0].id;
+  }
+
+  try {
+    const result: any = await csms.changeAvailability(chargeBoxId, { connectorId, type });
+    const nextStatus = (result && result.status === 'Accepted') ? 'accepted' : 'sent';
+
+    await sb.from('commands')
+      .update({ status: nextStatus, response: result ?? {}, updated_at: new Date().toISOString() })
+      .eq('id', commandId);
+
+    return res.status(202).json({
+      commandId,
+      status: nextStatus,
+      ...(force ? { idempotentDuplicate: true, resent: true } : {}),
+      response: result ?? {},
+    });
+  } catch (e:any) {
+    await sb.from('commands')
+      .update({ status:'pending', updated_at: new Date().toISOString() })
+      .eq('id', commandId!);
+    return res.status(409).json({
+      commandId,
+      status:'pending',
+      ...(force ? { idempotentDuplicate: true } : {}),
+      error:'charge_point_offline',
+      detail: e?.message || 'charge_point_offline',
+    });
+  }
+});
+
+
+/* ===== Consultas ===== */
 router.get('/:id', async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid_id' });
 
-  const { rows } = await pool.query(
-    `SELECT id, command_type, transaction_id, charge_box_id, status, payload, response, created_at, updated_at
-       FROM orchestrator.commands
-      WHERE id = $1::bigint`,
-    [id],
-  );
-  if (!rows.length) return res.status(404).json({ error: 'not_found' });
-  return res.json(rows[0]);
+  const r = await sb
+    .from('commands')
+    .select('id, command_type, transaction_id, charge_box_id, status, payload, response, created_at, updated_at')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (r.error?.code === 'PGRST116') return res.status(404).json({ error: 'not_found' });
+  if (r.error) return res.status(500).json({ error: 'query_error', detail: r.error.message });
+  if (!r.data) return res.status(404).json({ error: 'not_found' });
+
+  return res.json(r.data);
 });
 
-router.get('/', async (req: Request, res: Response) => {
-  const tx = req.query.transaction_id ? Number(req.query.transaction_id) : undefined;
-  const params: any[] = [];
-  const where: string[] = [];
-  let i = 1;
+router.get('/', async (_req: Request, res: Response) => {
+  const r = await sb
+    .from('commands')
+    .select('id, command_type, transaction_id, charge_box_id, status, created_at')
+    .order('created_at', { ascending: false })
+    .limit(100);
 
-  if (Number.isFinite(tx)) { where.push(`transaction_id = $${i++}::int`); params.push(tx); }
-
-  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const { rows } = await pool.query(
-    `SELECT id, command_type, transaction_id, charge_box_id, status, created_at
-       FROM orchestrator.commands
-       ${whereSql}
-       ORDER BY created_at DESC
-       LIMIT 100`,
-    params,
-  );
-  return res.json(rows);
+  if (r.error) return res.status(500).json({ error: 'query_error', detail: r.error.message });
+  return res.json(r.data);
 });
 
 export default router;

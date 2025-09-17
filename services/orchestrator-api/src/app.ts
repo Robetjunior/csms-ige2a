@@ -6,14 +6,14 @@ import swaggerUi from 'swagger-ui-express';
 import eventsRouter from './routes/events';
 import commandsRouter from './routes/commands';
 import sessionsRouter from './routes/sessions';
+import sessionsProgressRouter from './routes/sessions-progress';
+import chargersRouter from './routes/chargers';
 import metricsRouter from './routes/metrics';
 import metricsAdvancedRouter from './routes/metrics-advanced';
-
-// ✅ importe estes dois
 import tariffsRouter from './routes/tariffs';
 import billingRouter from './routes/billing';
+import debugRouter from './routes/debug';
 
-import { pg } from './db';
 import { buildCors, buildRateLimiter } from './config/http';
 import { requireApiKey } from './middleware/apiKey';
 
@@ -22,17 +22,8 @@ const app = express();
 app.use(express.json());
 app.use(buildCors());
 
-// Health/Ready SEM auth
+// Health/Ready (sem auth)
 app.get('/health', (_req: Request, res: Response) => res.json({ ok: true }));
-app.get('/ready', async (_req: Request, res: Response) => {
-  try {
-    await pg.query('SELECT 1');
-    return res.json({ ok: true, pg: 'up' });
-  } catch (e) {
-    console.error('[ready] pg check failed:', e);
-    return res.status(500).json({ ok: false, pg: 'down' });
-  }
-});
 
 // ---- DOCS ----
 const OPENAPI_FILE = path.resolve(process.cwd(), 'openapi.yaml');
@@ -53,22 +44,22 @@ if (DOCS_ENABLED) {
 } else {
   console.warn('[docs] desabilitado (ENABLE_DOCS=0)');
 }
+app.use('/v1/debug', debugRouter);
 
-// 🔐 A partir daqui, /v1/** exige X-API-Key
-app.use('/v1/', requireApiKey());
-
-// Rate limit só após autenticar
-app.use('/v1/', buildRateLimiter());
+// 🔐 A partir daqui, /v1/** exige X-API-Key e rate limit
+app.use('/v1', requireApiKey(), buildRateLimiter());
 
 // Rotas
 app.use('/v1/events', eventsRouter);
-app.use('/v1/ocpp',  eventsRouter);
+app.use('/v1/ocpp',  eventsRouter); 
 app.use('/v1/commands', commandsRouter);
 app.use('/v1/sessions', sessionsRouter);
-app.use('/v1/metrics', metricsRouter);
-app.use('/v1/metrics', metricsAdvancedRouter);
+app.use('/v1/sessions', sessionsProgressRouter);
+app.use('/v1/chargers', chargersRouter);
 
-// ✅ monte aqui:
+app.use('/v1/metrics', metricsRouter);
+app.use('/v1/metrics-advanced', metricsAdvancedRouter);
+
 app.use('/v1/tariffs', tariffsRouter);
 app.use('/v1/billing', billingRouter);
 

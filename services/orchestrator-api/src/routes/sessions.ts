@@ -1,17 +1,114 @@
-  import { Router, Request, Response } from 'express';
-  import { listSessions } from '../services/repo';
-  import { pg } from '../db';
+import { Router, Request, Response } from 'express';
+import { sb } from '../../supabase';
+import { z } from 'zod';
 
-  const router = Router();
+const router = Router();
 
-  /**
-   * GET /v1/sessions
-   * Filtros: charge_box_id, id_tag, transaction_id, status (active|completed), from, to
-   * Paginação: limit, offset
-   * Ordenação: sort (asc|desc) por started_at
-   */
-  router.get('/', async (req: Request, res: Response) => {
-    try {
+const TxParam = z.object({ transactionId: z.coerce.number().int().positive() });
+
+function extractMeterAndSocFromMeterValuesPayload(p: any): { wh?: number, soc?: number } {
+  try {
+    const arr = p?.meterValue || p?.meterValues || [];
+    let wh: number|undefined;
+    let soc: number|undefined;
+
+    for (const mv of arr) {
+      const samples = mv?.sampledValue || [];
+      for (const sv of samples) {
+        const meas = (sv.measurand || '').toString();
+        const valStr = (sv.value ?? '').toString().trim();
+        const val = Number(valStr);
+        if (!Number.isFinite(val)) continue;
+
+        // Energia acumulada (Wh) costuma vir como "Energy.Active.Import.Register"
+        if (!meas || /Energy\.Active\.Import\.Register/i.test(meas)) {
+          wh = val; // Wh acumulado
+        }
+        // SoC em %
+        if (/^SoC$/i.test(meas)) {
+          soc = val;
+        }
+      }
+    }
+    return { wh, soc };
+  } catch {
+    return {};
+  }
+}
+
+router.get('/:transactionId/progress', async (req: Request, res: Response) => {
+  const parsed = TxParam.safeParse(req.params);
+  if (!parsed.success) return res.status(400).json({ error:'invalid_transaction_id' });
+
+  const tx = parsed.data.transactionId;
+
+  try {
+    // 1) sessão (para started_at)
+    const s = await sb
+      .from('sessions')
+      .select('started_at, stopped_at')
+      .eq('transaction_id', tx)
+      .order('id', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (s.error) return res.status(500).json({ error:'query_error', detail: s.error.message });
+    if (!s.data) return res.status(404).json({ error:'session_not_found' });
+
+    const startedAt = new Date((s.data as any).started_at);
+    const baseNow = (s.data as any).stopped_at ? new Date((s.data as any).stopped_at) : new Date();
+    const duration_seconds = Math.max(0, Math.floor((baseNow.getTime() - startedAt.getTime())/1000));
+
+    // 2) meterStart (StartTransaction)
+    const startEv = await sb
+      .from('ocpp_events')
+      .select('payload')
+      .eq('tipo', 'StartTransaction')
+      .eq('transaction_id', tx)
+      .order('id', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (startEv.error) return res.status(500).json({ error:'query_error', detail: startEv.error.message });
+    const meterStartWh = Number((startEv.data as any)?.payload?.meterStart ?? 0) || 0;
+
+    // 3) último MeterValues
+    const lastMv = await sb
+      .from('ocpp_events')
+      .select('payload')
+      .eq('tipo', 'MeterValues')
+      .eq('transaction_id', tx)
+      .order('id', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    let meterLatestWh = meterStartWh;
+    let soc_percent_at: number | undefined;
+
+    if (!lastMv.error && lastMv.data) {
+      const { wh, soc } = extractMeterAndSocFromMeterValuesPayload((lastMv.data as any).payload);
+      if (typeof wh === 'number' && Number.isFinite(wh)) meterLatestWh = wh;
+      if (typeof soc === 'number' && Number.isFinite(soc)) soc_percent_at = soc;
+    }
+
+    const kwh = Math.max(0, (meterLatestWh - meterStartWh) / 1000);
+
+    return res.json({
+      kwh: Number(kwh.toFixed(3)),
+      duration_seconds,
+      ...(soc_percent_at != null ? { soc_percent_at: Math.round(soc_percent_at) } : {})
+    });
+  } catch (err:any) {
+    console.error('[GET /v1/sessions/:transactionId/progress] error:', err);
+    return res.status(500).json({ error:'internal_error' });
+  }
+});
+
+/**
+ * GET /v1/sessions
+ */
+router.get('/', async (req: Request, res: Response) => {
+  try {
     const {
       charge_box_id,
       id_tag,
@@ -24,19 +121,28 @@
       sort = 'desc',
     } = req.query as Record<string, string | undefined>;
 
-    const result = await listSessions({
-      chargeBoxId: charge_box_id,
-      idTag: id_tag,
-      transactionId: transaction_id ? Number(transaction_id) : undefined,
-      status: status === 'active' || status === 'completed' ? (status as 'active'|'completed') : undefined,
-      from: from ? new Date(from) : undefined,
-      to: to ? new Date(to) : undefined,
-      limit: Math.min(Math.max(parseInt(String(limit) || '50', 10), 1), 500),
-      offset: Math.max(parseInt(String(offset) || '0', 10), 0),
-      sort: (sort || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc',
-    });
+    const parsedLimit = Math.min(Math.max(parseInt(String(limit) || '50', 10), 1), 500);
+    const parsedOffset = Math.max(parseInt(String(offset) || '0', 10), 0);
+    const orderAsc = (sort || 'desc').toLowerCase() === 'asc';
 
-    return res.json(result);
+    let q = sb
+      .from('sessions')
+      .select('transaction_id, charge_box_id, id_tag, started_at, stopped_at, stop_reason, mode, energy_kwh, revenue_br', { count: 'exact' })
+      .order('started_at', { ascending: orderAsc })
+      .range(parsedOffset, parsedOffset + parsedLimit - 1);
+
+    if (charge_box_id) q = q.eq('charge_box_id', charge_box_id);
+    if (id_tag) q = q.eq('id_tag', id_tag);
+    if (transaction_id) q = q.eq('transaction_id', Number(transaction_id));
+    if (status === 'active') q = q.is('stopped_at', null);
+    if (status === 'completed') q = q.not('stopped_at', 'is', null);
+    if (from) q = q.gte('started_at', new Date(from).toISOString());
+    if (to) q = q.lt('started_at', new Date(to).toISOString());
+
+    const r = await q;
+    if (r.error) return res.status(500).json({ error: 'query_error', detail: r.error.message });
+
+    return res.json({ total: r.count ?? 0, items: r.data });
   } catch (err: any) {
     console.error('[GET /v1/sessions] error:', err);
     return res.status(500).json({ error: 'internal_error' });
@@ -45,7 +151,6 @@
 
 /**
  * GET /v1/sessions/:transactionId
- * Retorna o estado de uma sessão específica.
  */
 router.get('/:transactionId', async (req: Request, res: Response) => {
   try {
@@ -54,25 +159,22 @@ router.get('/:transactionId', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'invalid_transaction_id' });
     }
 
-    const sql = `
-      SELECT
-        (s.transaction_id)::int AS transaction_id,
-        s.charge_box_id,
-        s.id_tag,
-        s.started_at,
-        s.stopped_at,
-        s.stop_reason,
-        CASE WHEN s.stopped_at IS NULL THEN 'active' ELSE 'completed' END AS status,
-        EXTRACT(EPOCH FROM (COALESCE(s.stopped_at, now()) - s.started_at))::int AS duration_seconds
-      FROM orchestrator.sessions s
-      WHERE s.transaction_id = $1::int
-      ORDER BY s.id DESC
-      LIMIT 1
-    `;
-    const { rows } = await pg.query(sql, [tx]);
+    const r = await sb
+      .from('sessions')
+      .select('transaction_id, charge_box_id, id_tag, started_at, stopped_at, stop_reason')
+      .eq('transaction_id', tx)
+      .order('id', { ascending: false })
+      .limit(1)
+      .single();
 
-    if (!rows.length) return res.status(404).json({ error: 'not_found' });
-    return res.json(rows[0]);
+    if (r.error?.code === 'PGRST116') return res.status(404).json({ error: 'not_found' });
+    if (r.error) return res.status(500).json({ error: 'query_error', detail: r.error.message });
+
+    const s: any = r.data;
+    const duration_seconds = Math.floor((new Date(s.stopped_at ?? new Date()).getTime() - new Date(s.started_at).getTime())/1000);
+    const status = s.stopped_at ? 'completed' : 'active';
+
+    return res.json({ ...s, status, duration_seconds });
   } catch (err: any) {
     console.error('[GET /v1/sessions/:id] error:', err);
     return res.status(500).json({ error: 'internal_error' });
