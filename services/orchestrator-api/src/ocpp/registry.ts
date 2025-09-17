@@ -1,3 +1,4 @@
+// services/orchestrator-api/src/ocpp/registry.ts
 import { WebSocket } from 'ws';
 
 export type CbId = string;
@@ -22,6 +23,7 @@ export class ConnectionRegistry {
   delPeer(cbid: CbId) { this.peers.delete(cbid); }
   getPeer(cbid: CbId) { return this.peers.get(cbid); }
   listPeers(): CbId[] { return Array.from(this.peers.keys()); }
+  isOnline(cbid: CbId): boolean { return this.peers.has(cbid); }
 
   /* ========== TX owner bindings ========== */
   bindTx(tx: number, cbid: CbId) {
@@ -52,11 +54,32 @@ export class ConnectionRegistry {
     return Array.from(m.entries()).map(([connectorId, v]) => ({ connectorId, ...v }));
   }
 
+  getConnectorStatus(cbid: CbId, connectorId: number): (ConnectorState & { connectorId: number }) | undefined {
+    const m = this.connector.get(cbid);
+    const v = m?.get(connectorId);
+    return v ? { connectorId, ...v } : undefined;
+  }
+
   /* ========== Heartbeat ========== */
   setHeartbeat(cbid: CbId, whenISO?: string) {
     this.lastHeartbeat.set(cbid, whenISO ?? new Date().toISOString());
   }
   getHeartbeat(cbid: CbId): string | undefined {
     return this.lastHeartbeat.get(cbid);
+  }
+  /** Alias para compatibilidade com os handlers HTTP existentes */
+  getLastHeartbeat(cbid: CbId): string | undefined {
+    return this.getHeartbeat(cbid);
+  }
+
+  /* ========== Snapshot para /debug/status ========== */
+  getStatusSnapshot(cbid: CbId) {
+    return {
+      chargeBoxId: cbid,
+      online: this.isOnline(cbid),
+      heartbeat: this.getHeartbeat(cbid) ?? null,
+      connectors: this.getConnectorStatuses(cbid),
+      lastTransactionId: this.getLastTxForChargeBox(cbid) ?? null,
+    };
   }
 }
