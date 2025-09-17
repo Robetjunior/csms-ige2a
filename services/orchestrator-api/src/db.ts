@@ -1,33 +1,26 @@
-// src/db.ts
+// services/orchestrator-api/src/db.ts
 import dotenv from 'dotenv';
 dotenv.config();
 
+import { Pool, PoolConfig, PoolClient } from 'pg';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import mariadb, { Pool as MariaPool } from 'mariadb';
 
-// ✅ ADD: node-postgres
-import {
-  Pool as PgPool,
-  PoolClient as PgPoolClient,
-  types as pgTypes,
-  QueryResult,
-  QueryResultRow,
-} from 'pg';
-
-/* -------------------- LOG ENV -------------------- */
-let envLogged = false;
-(function logDbEnvOnce() {
-  if (envLogged) return;
-  envLogged = true;
-  console.log('[db.env] SUPABASE_URL:', process.env.SUPABASE_URL);
-  console.log('[db.env] Using key:', (process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY) ? 'present' : 'missing');
-  console.log('[db.env] NODE_ENV:', process.env.NODE_ENV || 'undefined');
-})();
-
-/* -------------------- SUPABASE (HTTP) -------------------- */
+/* =========================
+ *  SUPABASE (HTTP SDK)
+ * ========================= */
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_SERVICE_KEY =
   process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY!;
+
+let _envLogged = false;
+(function logOnce() {
+  if (_envLogged) return;
+  _envLogged = true;
+  console.log('[db.env] SUPABASE_URL:', SUPABASE_URL);
+  console.log('[db.env] Using key:', SUPABASE_SERVICE_KEY ? 'present' : 'missing');
+  console.log('[db.env] NODE_ENV:', process.env.NODE_ENV || 'undefined');
+})();
 
 export const sb: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
   auth: { persistSession: false },
@@ -43,80 +36,95 @@ export async function checkPgHttp(): Promise<boolean> {
   return !e2;
 }
 
-/* -------------------- POSTGRES (node-postgres) -------------------- */
-// Dica: para Supabase ou PG gerenciado, normalmente precisa de SSL.
-const PG_URL =
-  process.env.PG_URL ||
-  process.env.DATABASE_URL || // compatível com plataformas PaaS
-  undefined;
+/* =========================
+ *  POSTGRES (pg Pool)
+ * ========================= */
+let _pgPool: Pool | null = null;
 
-const PGHOST = process.env.PGHOST;
-const PGPORT = process.env.PGPORT ? Number(process.env.PGPORT) : undefined;
-const PGUSER = process.env.PGUSER;
-const PGPASSWORD = process.env.PGPASSWORD;
-const PGDATABASE = process.env.PGDATABASE;
-const PGSSL = (process.env.PG_SSL ?? 'true').toLowerCase() !== 'false'; // default true
-
-// Constrói config quando não há URL única
-const pgConnConfig = PG_URL
-  ? { connectionString: PG_URL, ssl: PGSSL ? { rejectUnauthorized: false } : undefined }
-  : {
-      host: PGHOST,
-      port: PGPORT,
-      user: PGUSER,
-      password: PGPASSWORD,
-      database: PGDATABASE,
-      ssl: PGSSL ? { rejectUnauthorized: false } : undefined,
-    };
-
-// Ajuste de parsers: int8/bigint -> number (se couber)
-pgTypes.setTypeParser(20, (v: string) => {
-  const n = Number(v);
-  return Number.isNaN(n) ? v : n;
-});
-
-let _pgPool: PgPool | null = null;
-function getPgPool(): PgPool {
-  if (!_pgPool) {
-    _pgPool = new PgPool(pgConnConfig as any);
-    _pgPool.on('error', (err) => {
-      console.error('[pg] pool error:', err?.message || err);
-    });
+function buildPgPool(): Pool {
+  // Dê preferência a POSTGRES_URI; se ausente, tenta SUPABASE_DB_URL
+  const cs = process.env.POSTGRES_URI || process.env.SUPABASE_DB_URL;
+  if (!cs) {
+    throw new Error(
+      'POSTGRES_URI (ou SUPABASE_DB_URL) não definido. Configure em services/orchestrator-api/.env'
+    );
   }
+
+  const cfg: PoolConfig = {
+    connectionString: cs,
+    max: Number(process.env.PG_POOL_MAX || '10'),
+  };
+
+  // SSL: se a URL tiver sslmode=require ou se for Supabase, ativa SSL
+  const mustSSL =
+    /sslmode=require/i.test(cs) ||
+    /\.supabase\.co[:/]/i.test(cs) ||
+    /\.pooler\.supabase\.com[:/]/i.test(cs);
+
+  if (mustSSL) {
+    cfg.ssl = {
+      rejectUnauthorized: process.env.PG_SSL_REJECT_UNAUTHORIZED === '0' ? false : true,
+    };
+  }
+
+  const pool = new Pool(cfg);
+
+  pool.on('error', (err) => {
+    console.error('[pg.pool] unexpected error on idle client:', err?.message || err);
+  });
+
+  try {
+    const u = new URL(cs);
+    console.log(
+      `[pg.pool] using host=${u.host} db=${u.pathname.replace('/', '')} ssl=${cfg.ssl ? 'on' : 'off'} max=${cfg.max}`
+    );
+  } catch {
+    console.log(`[pg.pool] using connectionString (ssl=${cfg.ssl ? 'on' : 'off'})`);
+  }
+
+  return pool;
+}
+
+export function getPgPool(): Pool {
+  if (!_pgPool) _pgPool = buildPgPool();
   return _pgPool;
 }
 
-export interface PgWrapper {
-  query<T extends QueryResultRow = any>(
-    text: string,
-    params?: any[],
-  ): Promise<QueryResult<T>>;
-  connect(): Promise<PgPoolClient>;
-}
-
-export const pg: PgWrapper = {
-  query: (text, params) => getPgPool().query(text, params),
-  connect: () => getPgPool().connect(),
+export const pg = {
+  query: (text: string, params?: any[]) => getPgPool().query(text, params),
+  connect: (): Promise<PoolClient> => getPgPool().connect(),
 };
 
-// Health check SQL direto
-export async function checkPgSql(): Promise<boolean> {
+export async function checkPgTcp(): Promise<boolean> {
+  const client = await getPgPool().connect();
   try {
-    const r = await pg.query<{ ok: number }>('select 1 as ok');
-    return !!r.rows?.[0]?.ok;
-  } catch {
-    return false;
+    const r = await client.query('SELECT 1 AS ok');
+    return r.rows?.[0]?.ok === 1;
+  } finally {
+    client.release();
   }
 }
 
-/* -------------------- MariaDB (SteVe) -------------------- */
+export async function closePgPool() {
+  if (_pgPool) {
+    try {
+      await _pgPool.end();
+    } catch {}
+    _pgPool = null;
+  }
+}
+
+/* =========================
+ *  MARIA DB (SteVe)
+ * ========================= */
 const MARIADB_HOST = process.env.MARIADB_HOST || '127.0.0.1';
-const MARIADB_PORT = Number(process.env.MARIADB_PORT || '3307');
+const MARIADB_PORT = Number(process.env.MARIADB_PORT || '3306');
 const MARIADB_USER = process.env.MARIADB_USER || 'steve';
 const MARIADB_PASSWORD = process.env.MARIADB_PASSWORD || 'steve';
 const MARIADB_DATABASE = process.env.MARIADB_DATABASE || 'steve';
 
 let _mdbPool: MariaPool | null = null;
+
 export function getMariaPool(): MariaPool {
   if (!_mdbPool) {
     _mdbPool = mariadb.createPool({
@@ -144,7 +152,7 @@ export async function checkMaria(retries = 2): Promise<boolean> {
       return rows?.[0]?.ok === 1 || rows?.[0]?.['1'] === 1;
     } catch (e) {
       lastErr = e;
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise((r) => setTimeout(r, 1000));
     } finally {
       if (conn) conn.release();
     }
@@ -153,9 +161,10 @@ export async function checkMaria(retries = 2): Promise<boolean> {
 }
 
 export async function closeDbPools() {
-  try { if (_mdbPool) await _mdbPool.end(); } catch {}
+  try {
+    if (_mdbPool) await _mdbPool.end();
+  } catch {}
   _mdbPool = null;
 
-  try { if (_pgPool) await _pgPool.end(); } catch {}
-  _pgPool = null;
+  await closePgPool();
 }
