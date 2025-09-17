@@ -2,7 +2,7 @@ services:
   postgres:
     image: postgres:15
     container_name: csms_postgres
-    profiles: ["dev"]
+    profiles: ["dev"]                 # Só para desenvolvimento local
     environment:
       POSTGRES_USER: csms
       POSTGRES_PASSWORD: csms
@@ -39,9 +39,8 @@ services:
       - "3307:3306"
     volumes:
       - ./.data/mariadb:/var/lib/mysql
-    # Use $$ para escapar e evitar interpolação pelo Compose:
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -usteve -p$$MARIADB_PASSWORD -h 127.0.0.1 --silent"]
+      test: ["CMD-SHELL", "mysqladmin ping -usteve -p$MARIADB_PASSWORD -h 127.0.0.1 --silent"]
       interval: 5s
       timeout: 3s
       retries: 30
@@ -89,19 +88,38 @@ services:
     volumes:
       - ./services/orchestrator-api:/app
       - /app/node_modules
+      # Opcional: autoridade interna (se existir)
       - ./certs/corp-ca.crt:/usr/local/share/ca-certificates/corp-ca.crt:ro
-    # Carrega TUDO de services/orchestrator-api/.env no container:
-    env_file:
-      - ./services/orchestrator-api/.env
-    # (opcionais) DNS e flags do Node
     dns:
       - 1.1.1.1
       - 8.8.8.8
+
+    # ✅ Carrega variáveis de services/orchestrator-api/.env (POSTGRES_URI, SUPABASE_*, ORCH_API_KEY etc.)
+    env_file:
+      - ./services/orchestrator-api/.env
+
     environment:
-      # Você pode mover estas 3 para o .env também, se preferir.
-      CHOKIDAR_USEPOLLING: "true"
-      NODE_OPTIONS: "--dns-result-order=ipv4first"
+      NODE_ENV: development
       TZ: UTC
+      PORT: "3000"
+      PG_POOL_MAX: "10"
+      PG_SSL_REJECT_UNAUTHORIZED: "0"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+
+      # SteVe (MariaDB)
+      MARIADB_HOST: mariadb
+      MARIADB_PORT: "3306"
+      MARIADB_USER: steve
+      MARIADB_PASSWORD: steve
+      MARIADB_DATABASE: steve
+
+      # HTTP
+      CHOKIDAR_USEPOLLING: "true"
+      ORCH_API_KEY: ${ORCH_API_KEY:-minha_chave_super_secreta}
+
+      # Prioriza IPv4
+      NODE_OPTIONS: "--dns-result-order=ipv4first"
+
     command: >
       sh -lc "apk add --no-cache ca-certificates &&
               update-ca-certificates &&
