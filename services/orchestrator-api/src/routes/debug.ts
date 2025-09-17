@@ -1,16 +1,14 @@
 import { Router, Request, Response } from 'express';
 import { csms } from '../ocpp/csms';
-import { sb } from '../../supabase'; // mantenha se você usa abaixo; caso não use, pode remover
+import { sb } from '../../supabase';
 
 const router = Router();
 
-/** Lista charge points online no momento (via in-memory registry) */
 router.get('/ocpp/online', (_req: Request, res: Response) => {
   try { return res.json({ online: csms.listOnline() }); }
   catch (e:any) { return res.status(500).json({ error:'internal_error', detail: e?.message||String(e) }); }
 });
 
-/** Resolve o dono de um transactionId (qual CP gerou) */
 router.get('/ocpp/resolve-tx/:tx', (req: Request, res: Response) => {
   const tx = Number(req.params.tx);
   if (!Number.isFinite(tx) || tx <= 0) return res.status(400).json({ error:'invalid_tx' });
@@ -23,13 +21,11 @@ router.get('/ocpp/resolve-tx/:tx', (req: Request, res: Response) => {
   }
 });
 
-/** Lista bindings em memória: transactionId -> chargeBoxId */
 router.get('/ocpp/bindings', (_req: Request, res: Response) => {
   try { return res.json({ bindings: csms.listTxBindings() }); }
   catch (e:any) { return res.status(500).json({ error:'internal_error', detail: e?.message||String(e) }); }
 });
 
-/** Último transactionId conhecido (in-memory) para um CP */
 router.get('/ocpp/last-tx/:cbid', (req: Request, res: Response) => {
   const cbid = String(req.params.cbid);
   try {
@@ -41,7 +37,6 @@ router.get('/ocpp/last-tx/:cbid', (req: Request, res: Response) => {
   }
 });
 
-/** Status atual por conector + último heartbeat (in-memory) */
 router.get('/ocpp/status/:cbid', (req: Request, res: Response) => {
   const cbid = String(req.params.cbid);
   try {
@@ -54,7 +49,6 @@ router.get('/ocpp/status/:cbid', (req: Request, res: Response) => {
   }
 });
 
-/** (Opcional) Lista comandos para um tx específico (útil p/ diagnosticar updates) */
 router.get('/ocpp/commands-for-tx/:tx', async (req: Request, res: Response) => {
   const tx = Number(req.params.tx);
   if (!Number.isFinite(tx) || tx <= 0) return res.status(400).json({ error:'invalid_tx' });
