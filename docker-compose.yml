@@ -39,8 +39,9 @@ services:
       - "3307:3306"
     volumes:
       - ./.data/mariadb:/var/lib/mysql
+    # Use $$ para escapar e evitar interpolação pelo Compose:
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -usteve -p$MARIADB_PASSWORD -h 127.0.0.1 --silent"]
+      test: ["CMD-SHELL", "mysqladmin ping -usteve -p$$MARIADB_PASSWORD -h 127.0.0.1 --silent"]
       interval: 5s
       timeout: 3s
       retries: 30
@@ -89,41 +90,18 @@ services:
       - ./services/orchestrator-api:/app
       - /app/node_modules
       - ./certs/corp-ca.crt:/usr/local/share/ca-certificates/corp-ca.crt:ro
+    # Carrega TUDO de services/orchestrator-api/.env no container:
+    env_file:
+      - ./services/orchestrator-api/.env
+    # (opcionais) DNS e flags do Node
     dns:
       - 1.1.1.1
       - 8.8.8.8
     environment:
-      NODE_ENV: development
-      TZ: UTC
-      PORT: "3000"
-
-      # DSN principal para o pool do Postgres usado pelo repo.ts
-      POSTGRES_URI: ${SUPABASE_DB_URL}
-      PG_POOL_MAX: "10"
-
-      # Ainda disponível se você usar o SDK HTTP do Supabase
-      SUPABASE_DB_URL: ${SUPABASE_DB_URL}
-      PG_SSL_REJECT_UNAUTHORIZED: "0"
-      NODE_TLS_REJECT_UNAUTHORIZED: "0"
-
-      SUPABASE_URL: https://nctwaraezhmznwindnvn.supabase.co
-      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
-      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
-
-      # SteVe (MariaDB)
-      MARIADB_HOST: mariadb
-      MARIADB_PORT: "3306"
-      MARIADB_USER: steve
-      MARIADB_PASSWORD: steve
-      MARIADB_DATABASE: steve
-
-      # HTTP
+      # Você pode mover estas 3 para o .env também, se preferir.
       CHOKIDAR_USEPOLLING: "true"
-      ORCH_API_KEY: ${ORCH_API_KEY:-minha_chave_super_secreta}
-
-      # Prioriza IPv4
       NODE_OPTIONS: "--dns-result-order=ipv4first"
-
+      TZ: UTC
     command: >
       sh -lc "apk add --no-cache ca-certificates &&
               update-ca-certificates &&
