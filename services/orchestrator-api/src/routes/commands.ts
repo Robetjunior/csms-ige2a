@@ -17,33 +17,34 @@ const RemoteStopSchema = z.object({
   transactionId: z.number().int().positive(),
 });
 
+const ResetSchema = z.object({
+  chargeBoxId: z.string().min(1),
+  type: z.enum(['Soft', 'Hard']).optional().default('Soft'),
+});
+
 const ChangeAvailabilitySchema = z.object({
   chargeBoxId: z.string().min(1),
   connectorId: z.number().int().nonnegative(), // 0 = todos
   type: z.enum(['Operative','Inoperative']),
 });
 
-router.post('/v1/commands/reset', async (req, res) => {
+router.post('/reset', async (req: Request, res: Response) => {
+  const parsed = ResetSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: 'invalid_payload',
+      details: parsed.error.issues.map(i => ({ path: i.path, message: i.message })),
+    });
+  }
+  const { chargeBoxId, type } = parsed.data;
   try {
-    const { chargeBoxId, type } = req.body || {};
-    if (!chargeBoxId) return res.status(400).json({ error: 'missing_chargeBoxId' });
-    const t = (type === 'Hard' ? 'Hard' : 'Soft') as 'Hard'|'Soft';
-    const r = await csms.reset(chargeBoxId, t);
-    res.json({ command: 'Reset', type: t, status: 'sent', result: r });
+    const r = await csms.reset(chargeBoxId, type);
+    res.json({ command: 'Reset', type, status: 'sent', response: r });
   } catch (e:any) {
     res.status(500).json({ error: 'reset_failed', detail: e?.message || String(e) });
   }
 });
 
-// POST /v1/debug/ocpp/disconnect/:cbid
-router.post('/v1/debug/ocpp/disconnect/:cbid', async (req, res) => {
-  try {
-    const r = await csms.kick(req.params.cbid);
-    res.json({ chargeBoxId: req.params.cbid, ...r });
-  } catch (e:any) {
-    res.status(500).json({ error: 'kick_failed', detail: e?.message || String(e) });
-  }
-});
 
 /* ===== RemoteStart ===== */
 router.post('/remoteStart', async (req: Request, res: Response) => {

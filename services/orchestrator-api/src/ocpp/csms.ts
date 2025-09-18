@@ -1,4 +1,3 @@
-// services/orchestrator-api/src/ocpp/csms.ts
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
@@ -104,21 +103,24 @@ export class OcppCsms extends EventEmitter {
     return this.sendCall(ws, 'CancelReservation', { reservationId });
   }
 
-  /** Reset remoto via OCPP (Soft/Hard) */
-  async reset(chargeBoxId: string, type: 'Soft' | 'Hard' = 'Soft') {
+  /** Reset (OCPP 1.6) */
+  async reset(chargeBoxId: string, type: 'Soft'|'Hard' = 'Soft') {
     const ws = this.registry.getPeer(chargeBoxId);
     if (!ws || ws.readyState !== ws.OPEN) throw new Error('charge_point_offline');
     return this.sendCall(ws, 'Reset', { type });
   }
 
-  /** “Kick”: fecha a WS do CP para ele reconectar */
+  /** Força desconexão do socket (útil para “desbugar”) */
   async kick(chargeBoxId: string) {
     const ws = this.registry.getPeer(chargeBoxId);
-    if (!ws) throw new Error('charge_point_offline');
-    try { ws.close(4000, 'kicked-by-admin'); } catch {}
-    this.registry.delPeer(chargeBoxId);
-    console.log(`[OCPP] CP kicked: ${chargeBoxId}`);
-    return { ok: true };
+    if (!ws) return { ok: false, reason: 'not_connected' as const };
+    try {
+      ws.close(4000, 'kicked_by_csms');
+      this.registry.delPeer(chargeBoxId);
+      return { ok: true as const, disconnected: true };
+    } catch (e: any) {
+      return { ok: false as const, reason: e?.message || String(e) };
+    }
   }
 
   /* ======================= Internals ======================== */
@@ -145,8 +147,6 @@ export class OcppCsms extends EventEmitter {
         try {
           await this.handleCall(ws, chargeBoxId, uid, action, payload);
         } catch (e:any) {
-          // devolve CALLERROR para o CP e loga
-          try { this.sendError(ws, uid, 'InternalError', e?.message ?? 'internal_error', {}); } catch {}
           console.error('[OCPP] handleCall top-level error:', e?.message || e);
         }
         return;
@@ -191,18 +191,14 @@ export class OcppCsms extends EventEmitter {
         }
 
         case 'StartTransaction': {
-          // OCPP 1.6: CSMS retorna o transactionId
           const startedAt = p?.timestamp ? new Date(p.timestamp) : new Date();
           let transactionId = Math.floor(Date.now() / 1000) % 1_000_000_000;
           if (transactionId <= 0) transactionId = 1;
 
-          // vincula o tx ao CP
           this.registry.bindTx(transactionId, chargeBoxId);
 
-          // responde ao CP
           ok({ transactionId, idTagInfo: { status: 'Accepted' } });
 
-          // persiste
           try {
             await upsertSessionStart({ transactionId, chargeBoxId, idTag: p?.idTag ?? null, startedAt });
           } catch (e:any) { console.warn('[OCPP] upsertSessionStart falhou:', e?.message || e); }
@@ -220,14 +216,9 @@ export class OcppCsms extends EventEmitter {
         }
 
         case 'MeterValues': {
-          // ACK vazio conforme OCPP 1.6
           ack();
-
-          // Se vier transactionId do CP, garanta o binding
           const tx = Number(p?.transactionId);
-          if (Number.isFinite(tx) && tx > 0) {
-            this.registry.bindTx(tx, chargeBoxId);
-          }
+          if (Number.isFinite(tx) && tx > 0) this.registry.bindTx(tx, chargeBoxId);
 
           try {
             await insertEvento({
@@ -245,7 +236,6 @@ export class OcppCsms extends EventEmitter {
           const tx = Number(p?.transactionId);
           const stoppedAt = p?.timestamp ? new Date(p.timestamp) : new Date();
 
-          // responde rápido
           ack();
 
           try {
@@ -307,8 +297,6 @@ export class OcppCsms extends EventEmitter {
         }
       }
     } catch (err:any) {
-      // devolve CALLERROR e loga
-      try { this.sendError(ws, uid, 'InternalError', err?.message ?? 'internal_error', {}); } catch {}
       console.error('[OCPP] handleCall error (sem sendError):', { chargeBoxId, action, err: err?.message || err });
     }
   }
@@ -329,11 +317,6 @@ export class OcppCsms extends EventEmitter {
 
   private sendResult(ws: WebSocket, uid: string, payload: any) {
     const frame: OcppFrame = [3, uid, payload];
-    ws.send(JSON.stringify(frame));
-  }
-
-  private sendError(ws: WebSocket, uid: string, code: string, desc: string, details: any) {
-    const frame: OcppFrame = [4, uid, code, desc, details];
     ws.send(JSON.stringify(frame));
   }
 }
