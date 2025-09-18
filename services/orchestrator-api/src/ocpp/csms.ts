@@ -104,6 +104,23 @@ export class OcppCsms extends EventEmitter {
     return this.sendCall(ws, 'CancelReservation', { reservationId });
   }
 
+  /** Reset remoto via OCPP (Soft/Hard) */
+  async reset(chargeBoxId: string, type: 'Soft' | 'Hard' = 'Soft') {
+    const ws = this.registry.getPeer(chargeBoxId);
+    if (!ws || ws.readyState !== ws.OPEN) throw new Error('charge_point_offline');
+    return this.sendCall(ws, 'Reset', { type });
+  }
+
+  /** “Kick”: fecha a WS do CP para ele reconectar */
+  async kick(chargeBoxId: string) {
+    const ws = this.registry.getPeer(chargeBoxId);
+    if (!ws) throw new Error('charge_point_offline');
+    try { ws.close(4000, 'kicked-by-admin'); } catch {}
+    this.registry.delPeer(chargeBoxId);
+    console.log(`[OCPP] CP kicked: ${chargeBoxId}`);
+    return { ok: true };
+  }
+
   /* ======================= Internals ======================== */
   private handleConnection(ws: WebSocket, req: http.IncomingMessage) {
     const url = new URL(req.url || '', `http://${req.headers.host}`);
@@ -128,6 +145,8 @@ export class OcppCsms extends EventEmitter {
         try {
           await this.handleCall(ws, chargeBoxId, uid, action, payload);
         } catch (e:any) {
+          // devolve CALLERROR para o CP e loga
+          try { this.sendError(ws, uid, 'InternalError', e?.message ?? 'internal_error', {}); } catch {}
           console.error('[OCPP] handleCall top-level error:', e?.message || e);
         }
         return;
@@ -288,6 +307,8 @@ export class OcppCsms extends EventEmitter {
         }
       }
     } catch (err:any) {
+      // devolve CALLERROR e loga
+      try { this.sendError(ws, uid, 'InternalError', err?.message ?? 'internal_error', {}); } catch {}
       console.error('[OCPP] handleCall error (sem sendError):', { chargeBoxId, action, err: err?.message || err });
     }
   }

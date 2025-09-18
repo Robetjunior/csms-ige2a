@@ -23,6 +23,28 @@ const ChangeAvailabilitySchema = z.object({
   type: z.enum(['Operative','Inoperative']),
 });
 
+router.post('/v1/commands/reset', async (req, res) => {
+  try {
+    const { chargeBoxId, type } = req.body || {};
+    if (!chargeBoxId) return res.status(400).json({ error: 'missing_chargeBoxId' });
+    const t = (type === 'Hard' ? 'Hard' : 'Soft') as 'Hard'|'Soft';
+    const r = await csms.reset(chargeBoxId, t);
+    res.json({ command: 'Reset', type: t, status: 'sent', result: r });
+  } catch (e:any) {
+    res.status(500).json({ error: 'reset_failed', detail: e?.message || String(e) });
+  }
+});
+
+// POST /v1/debug/ocpp/disconnect/:cbid
+router.post('/v1/debug/ocpp/disconnect/:cbid', async (req, res) => {
+  try {
+    const r = await csms.kick(req.params.cbid);
+    res.json({ chargeBoxId: req.params.cbid, ...r });
+  } catch (e:any) {
+    res.status(500).json({ error: 'kick_failed', detail: e?.message || String(e) });
+  }
+});
+
 /* ===== RemoteStart ===== */
 router.post('/remoteStart', async (req: Request, res: Response) => {
   const parsed = RemoteStartSchema.safeParse(req.body);
