@@ -13,6 +13,7 @@ import metricsAdvancedRouter from './routes/metrics-advanced';
 import tariffsRouter from './routes/tariffs';
 import billingRouter from './routes/billing';
 import debugRouter from './routes/debug';
+import ocppDebug from './routes/ocpp-debug';
 
 import { buildCors, buildRateLimiter } from './config/http';
 import { requireApiKey } from './middleware/apiKey';
@@ -45,6 +46,7 @@ if (DOCS_ENABLED) {
   console.warn('[docs] desabilitado (ENABLE_DOCS=0)');
 }
 app.use('/v1/debug', debugRouter);
+app.use('/v1/ocpp', ocppDebug);
 
 // 🔐 A partir daqui, /v1/** exige X-API-Key e rate limit
 app.use('/v1', requireApiKey(), buildRateLimiter());
