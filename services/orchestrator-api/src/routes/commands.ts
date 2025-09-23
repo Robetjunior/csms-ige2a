@@ -19,7 +19,7 @@ const RemoteStopSchema = z.object({
 
 const ResetSchema = z.object({
   chargeBoxId: z.string().min(1),
-  type: z.enum(['Soft', 'Hard']).optional().default('Soft'),
+  type: z.enum(['Soft','Hard']).default('Soft')
 });
 
 const ChangeAvailabilitySchema = z.object({
@@ -28,20 +28,65 @@ const ChangeAvailabilitySchema = z.object({
   type: z.enum(['Operative','Inoperative']),
 });
 
-router.post('/reset', async (req: Request, res: Response) => {
-  const parsed = ResetSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({
-      error: 'invalid_payload',
-      details: parsed.error.issues.map(i => ({ path: i.path, message: i.message })),
-    });
-  }
-  const { chargeBoxId, type } = parsed.data;
+router.post('/reset', async (req, res) => {
+  const p = ResetSchema.safeParse(req.body);
+  if (!p.success) return res.status(400).json({ error:'invalid_payload', details:p.error.issues });
+  const { chargeBoxId, type } = p.data;
+
+  // registra comando
+  const ins = await sb.from('commands').insert({
+    command_type: 'Reset',
+    charge_box_id: chargeBoxId,
+    status: 'pending',
+    requested_by: 'api',
+    payload: { type }
+  }).select('id').single();
+  if (ins.error) return res.status(500).json({ error:'insert_error', detail: ins.error.message });
+
+  const cmdId = ins.data.id;
+
   try {
+    // tenta obter ACK; alguns CPs não respondem e reiniciam (timeout esperado)
     const r = await csms.reset(chargeBoxId, type);
-    res.json({ command: 'Reset', type, status: 'sent', response: r });
+    await sb.from('commands').update({
+      status: 'accepted',
+      response: r,
+      updated_at: new Date().toISOString()
+    }).eq('id', cmdId);
+
+    return res.status(202).json({ commandId: cmdId, status:'accepted', response: r });
   } catch (e:any) {
-    res.status(500).json({ error: 'reset_failed', detail: e?.message || String(e) });
+    const msg = String(e?.message || '');
+
+    // CP offline de verdade -> 409
+    if (/charge_point_offline/i.test(msg)) {
+      await sb.from('commands').update({ status:'pending', response:{ error:'offline' }, updated_at: new Date().toISOString() }).eq('id', cmdId);
+      return res.status(409).json({ commandId: cmdId, status:'pending', error:'charge_point_offline', detail: msg });
+    }
+
+    // ⚠️ Timeout do Reset = comportamento comum (CP reinicia sem ACK).
+    if (/timeout waiting CallResult for Reset/i.test(msg)) {
+      await sb.from('commands').update({
+        status: 'sent',
+        response: { note: 'no_ack_timeout' },
+        updated_at: new Date().toISOString()
+      }).eq('id', cmdId);
+
+      return res.status(202).json({
+        commandId: cmdId,
+        status: 'sent',
+        message: 'Reset enviado; sem ACK (comum). O CP deve reiniciar e reconectar em seguida.'
+      });
+    }
+
+    // Qualquer outro erro inesperado
+    await sb.from('commands').update({
+      status: 'failed',
+      response: { error: msg },
+      updated_at: new Date().toISOString()
+    }).eq('id', cmdId);
+
+    return res.status(500).json({ error:'reset_failed', detail: msg });
   }
 });
 
