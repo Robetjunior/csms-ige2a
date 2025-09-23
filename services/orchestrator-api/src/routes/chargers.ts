@@ -8,16 +8,11 @@ const router = Router();
 
 /* ============================ Schemas ============================ */
 
-const NearbyQuery = z.object({
+const ListQuery = z.object({
   lat: z.coerce.number().min(-90).max(90),
   lon: z.coerce.number().min(-180).max(180),
-  radiusKm: z.coerce.number().positive().max(1000).default(10),
-  limit: z.coerce.number().int().positive().max(100).default(20),
-  sinceMinutes: z.coerce.number().int().positive().max(120).default(7),
-  onlyOnline: z
-    .union([z.literal('1'), z.literal('true'), z.literal('0'), z.literal('false')])
-    .optional()
-    .transform(v => (v ? v === '1' || v === 'true' : false)),
+  radiusKm: z.coerce.number().positive().max(1000).default(20),
+  limit: z.coerce.number().int().positive().max(200).default(50),
 });
 
 const OnlineQuery = z.object({
@@ -25,9 +20,6 @@ const OnlineQuery = z.object({
   limit: z.coerce.number().int().positive().max(500).default(200),
 });
 
-const IdParam = z.object({
-  chargeBoxId: z.string().min(1),
-});
 
 /* ============================ Helpers ============================ */
 
@@ -42,21 +34,9 @@ const haversineKm = (lat1:number, lon1:number, lat2:number, lon2:number) => {
   return 2*R*Math.asin(Math.sqrt(a));
 };
 
-// Agrupa eventos de StatusNotification por conector e pega o mais recente
-function reduceLastStatusByConnector(rows: any[]) {
-  const out = new Map<number, { status: string; created_at: string }>();
-  for (const r of rows || []) {
-    const cid = Number(r.payload?.connectorId ?? r.connector_id ?? 0);
-    const cur = out.get(cid);
-    if (!cur || new Date(r.created_at).getTime() > new Date(cur.created_at).getTime()) {
-      out.set(cid, {
-        status: String(r.payload?.status ?? r.status ?? 'Unknown'),
-        created_at: r.created_at,
-      });
-    }
-  }
-  return out;
-}
+const isOccupiedStatus = (s:string|undefined) =>
+  ['Preparing','Charging','SuspendedEVSE','SuspendedEV','Finishing','Reserved','Occupied'].includes(String(s || ''));
+
 
 /* ============================ Rotas ============================ */
 
@@ -66,81 +46,57 @@ function reduceLastStatusByConnector(rows: any[]) {
  * Devolve também último status conhecido.
  */
 router.get('/online', async (req: Request, res: Response) => {
-  const sinceMinutes = Number(req.query.sinceMinutes ?? 10);
-  const limit = Math.min(Number(req.query.limit ?? 200), 500);
-  const cutoffIso = new Date(Date.now() - sinceMinutes * 60_000).toISOString();
+  const q = OnlineQuery.safeParse(req.query);
+  if (!q.success) return res.status(400).json({ error: 'invalid_query', details: q.error.issues });
+  const { sinceMinutes, limit } = q.data;
 
-  // 1) Online via WebSocket (registry do CSMS)
+  const cutoffIso = toISO(new Date(Date.now() - sinceMinutes * 60_000));
+
+  // 1) Heartbeats recentes
+  const hb = await sb
+    .from('last_heartbeat_v')
+    .select('charge_box_id,last_heartbeat_at')
+    .gte('last_heartbeat_at', cutoffIso);
+  if (hb.error) return res.status(500).json({ error:'query_error', detail: hb.error.message });
+
+  const onlineByHb = new Set((hb.data ?? []).map(r => r.charge_box_id));
+
+  // 2) Conectados via nosso CSMS (WebSocket)
   const onlineByWs = new Set(csms.listOnline());
 
-  // 2) Heartbeats recentes direto de events (plano B sem view)
-  let onlineByHb = new Set<string>();
-  const lastHbByCb = new Map<string, string>();
+  // 3) União (limite)
+  const union = Array.from(new Set<string>([...onlineByWs, ...onlineByHb])).slice(0, limit);
+  if (union.length === 0) return res.json({ items: [], count: 0 });
 
-  const hb = await sb
-    .from('events')
-    .select('charge_box_id, created_at')
-    .eq('event_type', 'Heartbeat')
-    .gte('created_at', cutoffIso)
-    .order('created_at', { ascending: false })
-    .limit(2000); // guarda- chuva
+  // 4) Último status de cada CP
+  const st = await sb
+    .from('last_status_v')
+    .select('charge_box_id,status,last_status_at')
+    .in('charge_box_id', union);
+  if (st.error) return res.status(500).json({ error:'query_error', detail: st.error.message });
 
-  if (!hb.error && hb.data) {
-    for (const r of hb.data as any[]) {
-      const id = r.charge_box_id as string;
-      if (!lastHbByCb.has(id)) {
-        lastHbByCb.set(id, r.created_at);
-        onlineByHb.add(id);
-      }
-    }
-  }
+  const byStatus = new Map(st.data?.map(r => [r.charge_box_id, r]) ?? []);
 
-  // 3) União WS ∪ Heartbeat (corta no limit)
-  const unionIds = Array.from(new Set<string>([...onlineByWs, ...onlineByHb])).slice(0, limit);
-
-  // 4) Último StatusNotification por CP (plano B sem view)
-  const lastStatusByCb = new Map<string, { status: string; at: string }>();
-  if (unionIds.length) {
-    const st = await sb
-      .from('events')
-      .select('charge_box_id, created_at, payload')
-      .eq('event_type', 'StatusNotification')
-      .in('charge_box_id', unionIds)
-      .order('created_at', { ascending: false })
-      .limit(2000);
-
-    if (!st.error && st.data) {
-      for (const r of st.data as any[]) {
-        const id = r.charge_box_id as string;
-        if (!lastStatusByCb.has(id)) {
-          const status = r.payload?.status ?? 'Unknown';
-          lastStatusByCb.set(id, { status, at: r.created_at });
-        }
-      }
-    }
-  }
-
-  // 5) Monta resposta combinando com snapshot do CSMS (conectores/tx)
-  const items = unionIds
+  // 5) Monta resposta com snapshot do CSMS
+  const items = union
     .map(id => {
       const snap = csms.getStatusSnapshot(id);
-      const st = lastStatusByCb.get(id);
-      const hbAt = snap.lastHeartbeat ?? lastHbByCb.get(id) ?? null;
-
+      const srow = byStatus.get(id);
+      const hbRow = (hb.data ?? []).find(x => x.charge_box_id === id);
       return {
         chargeBoxId: id,
         wsOnline: snap.online || onlineByWs.has(id),
         onlineRecently: onlineByHb.has(id),
-        lastHeartbeatAt: hbAt,
-        lastStatus: st?.status ?? 'Unknown',
-        lastStatusAt: st?.at ?? null,
-        connectors: snap.connectors,            // do registry (em RAM)
+        lastHeartbeatAt: snap.lastHeartbeat ?? hbRow?.last_heartbeat_at ?? null,
+        lastStatus: srow?.status ?? 'Unknown',
+        lastStatusAt: srow?.last_status_at ?? null,
+        connectors: snap.connectors,
         lastTransactionId: snap.lastTransactionId,
       };
     })
     .sort((a, b) => a.chargeBoxId.localeCompare(b.chargeBoxId));
 
-  return res.json({ items, count: items.length, sinceMinutes, limit });
+  return res.json({ items, count: items.length });
 });
 
 
@@ -149,91 +105,44 @@ router.get('/online', async (req: Request, res: Response) => {
  * Detalhe de um CP: dados cadastrais, conectores, status por conector, online, sessão ativa, etc.
  */
 router.get('/:chargeBoxId', async (req: Request, res: Response) => {
-  const p = IdParam.safeParse(req.params);
-  if (!p.success) return res.status(400).json({ error: 'invalid_charge_box_id' });
-  const id = p.data.chargeBoxId;
+  const id = String(req.params.chargeBoxId || '').trim();
+  if (!id) return res.status(400).json({ error: 'invalid_charge_box_id' });
 
-  // Cadastral
+  // Base de localização
   const cb = await sb
-    .from('charge_boxes')
-    .select('charge_box_id,site,lat,lon,address')
+    .from('charge_boxes_v')
+    .select('charge_box_id, site, lat, lon, address')
     .eq('charge_box_id', id)
     .maybeSingle();
 
-  if (cb.error?.code === 'PGRST116' || (!cb.data && !cb.error)) {
-    // mesmo sem cadastral, devolve snapshot WS se existir
-    const snap = csms.getStatusSnapshot(id);
-    if (!snap.online) return res.status(404).json({ error: 'not_found' });
-  }
-  if (cb.error && cb.error.code !== 'PGRST116') {
-    return res.status(500).json({ error: 'query_error', detail: cb.error.message });
-  }
+  if (cb.error) return res.status(500).json({ error:'query_error', detail: cb.error.message });
 
-  // Conectores cadastrados
-  const connectors = await sb
-    .from('connectors')
-    .select('connector_id,type,power_kw')
-    .eq('charge_box_id', id);
-
-  if (connectors.error) return res.status(500).json({ error:'query_error', detail: connectors.error.message });
-
-  // Últimos StatusNotification (reduzidos no cliente) – limite razoável
-  const st = await sb
-    .from('events')
-    .select('created_at,payload')
-    .eq('charge_box_id', id)
-    .eq('event_type', 'StatusNotification')
-    .order('created_at', { ascending: false })
-    .limit(400);
-
-  if (st.error) return res.status(500).json({ error:'query_error', detail: st.error.message });
-  const lastByConn = reduceLastStatusByConnector(st.data || []);
-
-  // Sessões ativas
-  const active = await sb
-    .from('sessions')
-    .select('connector_id,transaction_id')
-    .eq('charge_box_id', id)
-    .is('stopped_at', null);
-
-  if (active.error) return res.status(500).json({ error:'query_error', detail: active.error.message });
-
-  const occupied = new Map<number, number>();
-  (active.data || []).forEach(s => { if (s.connector_id != null) occupied.set(Number(s.connector_id), Number(s.transaction_id)); });
-
-  // Snapshot em memória
+  // Snapshot em memória (por conector)
   const snap = csms.getStatusSnapshot(id);
 
-  // Tarifa (opcional) – ignore erro se RPC não existir
-  let tariff: any = null;
-  try {
-    const t = await sb.rpc('resolve_tariff', { p_charge_box_id: id, p_mode: 'ANY', p_at: new Date().toISOString() });
-    if (!t.error) tariff = t.data?.[0] ?? null;
-  } catch {}
+  // Opcional: último status por CP (para fallback de "headline")
+  const st = await sb
+    .from('last_status_v')
+    .select('status,last_status_at')
+    .eq('charge_box_id', id)
+    .maybeSingle();
+
+  if (st.error && st.error.code !== 'PGRST116') {
+    return res.status(500).json({ error:'query_error', detail: st.error.message });
+  }
 
   return res.json({
     chargeBoxId: id,
     site: cb.data?.site ?? null,
-    coords: { lat: cb.data?.lat ?? null, lon: cb.data?.lon ?? null },
+    lat: cb.data?.lat ?? null,
+    lon: cb.data?.lon ?? null,
     address: cb.data?.address ?? null,
     wsOnline: snap.online,
-    wsLastHeartbeatAt: snap.lastHeartbeat,
-    lastTransactionId: snap.lastTransactionId,
-    connectors: (connectors.data || []).map((c: any) => {
-      const k = Number(c.connector_id);
-      const last = lastByConn.get(k);
-      const occTx = occupied.get(k);
-      const ocppStatus = occTx ? 'Occupied' : (last?.status ?? 'Available');
-      return {
-        connectorId: k,
-        type: c.type ?? null,
-        powerKw: c.power_kw != null ? Number(c.power_kw) : null,
-        ocppStatus,
-        lastStatusAt: last?.created_at ?? null,
-        activeTransactionId: occTx ?? null,
-      };
-    }),
-    tariff,
+    lastHeartbeatAt: snap.lastHeartbeat ?? null,
+    lastStatus: st.data?.status ?? (snap.connectors?.[0]?.status ?? 'Unknown'),
+    lastStatusAt: st.data?.last_status_at ?? null,
+    connectors: snap.connectors ?? [],
+    lastTransactionId: snap.lastTransactionId ?? null,
   });
 });
 
@@ -242,107 +151,82 @@ router.get('/:chargeBoxId', async (req: Request, res: Response) => {
  * Busca geográfica com status + online (WS/HB) e resumo dos conectores.
  */
 router.get('/', async (req: Request, res: Response) => {
-  const parsed = NearbyQuery.safeParse(req.query);
+  const parsed = ListQuery.safeParse(req.query);
   if (!parsed.success) return res.status(400).json({ error:'invalid_query', details: parsed.error.issues });
-  const { lat, lon, radiusKm, limit, sinceMinutes, onlyOnline } = parsed.data;
+  const { lat, lon, radiusKm, limit } = parsed.data;
 
   try {
-    // 1) bounding box
+    /* 1) bounding box simples */
     const latDeg = radiusKm / 110.574;
     const lonDeg = radiusKm / (111.320 * Math.cos(lat * Math.PI/180));
     const minLat = lat - latDeg, maxLat = lat + latDeg;
     const minLon = lon - lonDeg, maxLon = lon + lonDeg;
 
-    // 2) charge boxes candidatos
     const cb = await sb
-      .from('charge_boxes')
-      .select('charge_box_id,site,lat,lon')
+      .from('charge_boxes_v')
+      .select('charge_box_id, site, lat, lon')
       .gte('lat', minLat).lte('lat', maxLat)
       .gte('lon', minLon).lte('lon', maxLon);
 
     if (cb.error) return res.status(500).json({ error:'query_error', detail: cb.error.message });
 
-    const base = (cb.data || []).map((c:any) => ({
-      chargeBoxId: c.charge_box_id,
-      site: c.site,
-      coords: { lat: Number(c.lat), lon: Number(c.lon) },
-      distanceKm: haversineKm(lat, lon, Number(c.lat), Number(c.lon)),
-    }))
+    // Base com coords válidas (para distância)
+    const baseWithCoords = (cb.data || [])
+      .filter((r:any) => r.lat != null && r.lon != null)
+      .map((c:any) => ({
+        chargeBoxId: c.charge_box_id,
+        site: c.site ?? null,
+        coords: { lat: Number(c.lat), lon: Number(c.lon) },
+        distanceKm: haversineKm(lat, lon, Number(c.lat), Number(c.lon)),
+        needsLocation: false,
+      }))
       .filter(c => c.distanceKm <= radiusKm)
       .sort((a,b)=>a.distanceKm-b.distanceKm)
       .slice(0, limit);
 
+    const listedIds = new Set(baseWithCoords.map(b => b.chargeBoxId));
+
+    /* 2) fallback: incluir CPs online que não estão na view/raio */
+    const hb = await sb.from('last_heartbeat_v').select('charge_box_id,last_heartbeat_at');
+    if (hb.error) return res.status(500).json({ error:'query_error', detail: hb.error.message });
+
+    const onlineIds = Array.from(new Set<string>([...csms.listOnline(), ...((hb.data||[]).map(r=>r.charge_box_id))]));
+    const fallbackIds = onlineIds.filter(id => !listedIds.has(id));
+
+    const fallback = fallbackIds.map(id => ({
+      chargeBoxId: id,
+      site: null,
+      coords: null as any,
+      distanceKm: null as number | null,
+      needsLocation: true, // apareça no app mas sem distância (sem lat/lon)
+    })).slice(0, Math.max(0, limit - baseWithCoords.length));
+
+    const base = [...baseWithCoords, ...fallback];
+
     if (!base.length) return res.json([]);
 
-    const ids = base.map(b => b.chargeBoxId);
-
-    // 3) status/heartbeat consolidados via views
-    const [sv, hv] = await Promise.all([
-      sb.from('last_status_v').select('charge_box_id,status,last_status_at').in('charge_box_id', ids),
-      sb.from('last_heartbeat_v').select('charge_box_id,last_heartbeat_at').in('charge_box_id', ids),
-    ]);
-    if (sv.error) return res.status(500).json({ error:'query_error', detail: sv.error.message });
-    if (hv.error) return res.status(500).json({ error:'query_error', detail: hv.error.message });
-
-    const byStatus = new Map(sv.data?.map(r => [r.charge_box_id, r]) ?? []);
-    const byHb = new Map(hv.data?.map(r => [r.charge_box_id, r.last_heartbeat_at]) ?? []);
-    const cutoff = Date.now() - sinceMinutes * 60_000;
-
-    // 4) conectores + sessões ativas para resumo/occupied
-    const [conns, act] = await Promise.all([
-      sb.from('connectors').select('charge_box_id,connector_id,type,power_kw').in('charge_box_id', ids),
-      sb.from('sessions').select('charge_box_id,connector_id').is('stopped_at', null).in('charge_box_id', ids),
-    ]);
-    if (conns.error) return res.status(500).json({ error:'query_error', detail: conns.error.message });
-    if (act.error) return res.status(500).json({ error:'query_error', detail: act.error.message });
-
-    const occupied = new Set<string>();
-    (act.data || []).forEach((s:any) => {
-      if (s.connector_id != null) occupied.add(`${s.charge_box_id}#${s.connector_id}`);
+    /* 3) montar conectores/status usando snapshot do CSMS */
+    const out = base.map(b => {
+      const snap = csms.getStatusSnapshot(b.chargeBoxId);
+      // “ocupado” se qualquer conector não estiver Available
+      const anyBusy = (snap.connectors || []).some(c => isOccupiedStatus(c.status));
+      return {
+        chargeBoxId: b.chargeBoxId,
+        site: b.site,
+        coords: b.coords, // pode ser null no fallback
+        distanceKm: b.distanceKm != null ? Number(b.distanceKm.toFixed(3)) : null,
+        needsLocation: b.needsLocation,
+        connectors: snap.connectors ?? [],
+        overallStatus: anyBusy ? 'Occupied' : ((snap.connectors?.length ? 'Available' : 'Unknown')),
+        wsOnline: snap.online,
+        lastHeartbeatAt: snap.lastHeartbeat ?? null,
+      };
     });
-
-    const cByCb: Record<string, any[]> = {};
-    (conns.data || []).forEach((r:any) => {
-      const id = r.charge_box_id;
-      const key = `${id}#${r.connector_id}`;
-      (cByCb[id] ||= []).push({
-        connectorId: Number(r.connector_id),
-        type: r.type ?? null,
-        powerKw: r.power_kw != null ? Number(r.power_kw) : null,
-        status: occupied.has(key) ? 'Occupied' : 'Available',
-      });
-    });
-
-    // 5) WS snapshot
-    const wsSet = new Set(csms.listOnline());
-
-    const out = base
-      .map(b => {
-        const s = byStatus.get(b.chargeBoxId);
-        const hb = byHb.get(b.chargeBoxId);
-        const onlineRecently = hb ? new Date(hb).getTime() >= cutoff : false;
-        const wsOnline = wsSet.has(b.chargeBoxId) || csms.getStatusSnapshot(b.chargeBoxId).online;
-
-        return {
-          chargeBoxId: b.chargeBoxId,
-          site: b.site,
-          coords: b.coords,
-          distanceKm: Number(b.distanceKm.toFixed(3)),
-          lastStatus: s?.status ?? 'Unknown',
-          lastStatusAt: s?.last_status_at ?? null,
-          lastHeartbeatAt: hb ?? null,
-          onlineRecently,
-          wsOnline,
-          connectors: cByCb[b.chargeBoxId] || [],
-        };
-      })
-      .filter(x => (onlyOnline ? (x.wsOnline || x.onlineRecently) : true))
-      .sort((a, b) => a.distanceKm - b.distanceKm);
 
     return res.json(out);
   } catch (err:any) {
     console.error('[GET /v1/chargers] error:', err);
-    return res.status(500).json({ error:'internal_error' });
+    return res.status(500).json({ error:'internal_error', detail: String(err?.message || err) });
   }
 });
 
