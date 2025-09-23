@@ -66,53 +66,83 @@ function reduceLastStatusByConnector(rows: any[]) {
  * Devolve também último status conhecido.
  */
 router.get('/online', async (req: Request, res: Response) => {
-  const q = OnlineQuery.safeParse(req.query);
-  if (!q.success) return res.status(400).json({ error: 'invalid_query', details: q.error.issues });
-  const { sinceMinutes, limit } = q.data;
+  const sinceMinutes = Number(req.query.sinceMinutes ?? 10);
+  const limit = Math.min(Number(req.query.limit ?? 200), 500);
+  const cutoffIso = new Date(Date.now() - sinceMinutes * 60_000).toISOString();
 
-  const cutoffIso = toISO(new Date(Date.now() - sinceMinutes * 60_000));
-
-  // Heartbeats recentes
-  const hb = await sb
-    .from('last_heartbeat_v')
-    .select('charge_box_id,last_heartbeat_at')
-    .gte('last_heartbeat_at', cutoffIso);
-
-  if (hb.error) return res.status(500).json({ error: 'query_error', detail: hb.error.message });
-
-  const onlineByHb = new Set((hb.data ?? []).map(r => r.charge_box_id));
+  // 1) Online via WebSocket (registry do CSMS)
   const onlineByWs = new Set(csms.listOnline());
-  const union = Array.from(new Set<string>([...onlineByWs, ...onlineByHb])).slice(0, limit);
 
-  // Último status para os que estão online
-  const st = await sb
-    .from('last_status_v')
-    .select('charge_box_id,status,last_status_at')
-    .in('charge_box_id', union);
+  // 2) Heartbeats recentes direto de events (plano B sem view)
+  let onlineByHb = new Set<string>();
+  const lastHbByCb = new Map<string, string>();
 
-  if (st.error) return res.status(500).json({ error: 'query_error', detail: st.error.message });
+  const hb = await sb
+    .from('events')
+    .select('charge_box_id, created_at')
+    .eq('event_type', 'Heartbeat')
+    .gte('created_at', cutoffIso)
+    .order('created_at', { ascending: false })
+    .limit(2000); // guarda- chuva
 
-  const byStatus = new Map(st.data?.map(r => [r.charge_box_id, r]) ?? []);
+  if (!hb.error && hb.data) {
+    for (const r of hb.data as any[]) {
+      const id = r.charge_box_id as string;
+      if (!lastHbByCb.has(id)) {
+        lastHbByCb.set(id, r.created_at);
+        onlineByHb.add(id);
+      }
+    }
+  }
 
-  const items = union
+  // 3) União WS ∪ Heartbeat (corta no limit)
+  const unionIds = Array.from(new Set<string>([...onlineByWs, ...onlineByHb])).slice(0, limit);
+
+  // 4) Último StatusNotification por CP (plano B sem view)
+  const lastStatusByCb = new Map<string, { status: string; at: string }>();
+  if (unionIds.length) {
+    const st = await sb
+      .from('events')
+      .select('charge_box_id, created_at, payload')
+      .eq('event_type', 'StatusNotification')
+      .in('charge_box_id', unionIds)
+      .order('created_at', { ascending: false })
+      .limit(2000);
+
+    if (!st.error && st.data) {
+      for (const r of st.data as any[]) {
+        const id = r.charge_box_id as string;
+        if (!lastStatusByCb.has(id)) {
+          const status = r.payload?.status ?? 'Unknown';
+          lastStatusByCb.set(id, { status, at: r.created_at });
+        }
+      }
+    }
+  }
+
+  // 5) Monta resposta combinando com snapshot do CSMS (conectores/tx)
+  const items = unionIds
     .map(id => {
       const snap = csms.getStatusSnapshot(id);
-      const srow = byStatus.get(id);
+      const st = lastStatusByCb.get(id);
+      const hbAt = snap.lastHeartbeat ?? lastHbByCb.get(id) ?? null;
+
       return {
         chargeBoxId: id,
         wsOnline: snap.online || onlineByWs.has(id),
         onlineRecently: onlineByHb.has(id),
-        lastHeartbeatAt: snap.lastHeartbeat ?? (hb.data?.find(x => x.charge_box_id === id)?.last_heartbeat_at ?? null),
-        lastStatus: srow?.status ?? 'Unknown',
-        lastStatusAt: srow?.last_status_at ?? null,
-        connectors: snap.connectors,
+        lastHeartbeatAt: hbAt,
+        lastStatus: st?.status ?? 'Unknown',
+        lastStatusAt: st?.at ?? null,
+        connectors: snap.connectors,            // do registry (em RAM)
         lastTransactionId: snap.lastTransactionId,
       };
     })
     .sort((a, b) => a.chargeBoxId.localeCompare(b.chargeBoxId));
 
-  return res.json({ items, count: items.length });
+  return res.json({ items, count: items.length, sinceMinutes, limit });
 });
+
 
 /**
  * GET /v1/chargers/:chargeBoxId
