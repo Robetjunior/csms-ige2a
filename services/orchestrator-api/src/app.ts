@@ -13,6 +13,7 @@ import metricsAdvancedRouter from './routes/metrics-advanced';
 import tariffsRouter from './routes/tariffs';
 import billingRouter from './routes/billing';
 import debugRouter from './routes/debug';
+import actionsRouter from './routes/actions';
 import ocppDebug from './routes/ocpp-debug';
 
 import { buildCors, buildRateLimiter } from './config/http';
@@ -58,6 +59,7 @@ app.use('/v1/commands', commandsRouter);
 app.use('/v1/sessions', sessionsRouter);
 app.use('/v1/sessions', sessionsProgressRouter);
 app.use('/v1/chargers', chargersRouter);
+app.use('/v1/actions', actionsRouter);
 
 app.use('/v1/metrics', metricsRouter);
 app.use('/v1/metrics-advanced', metricsAdvancedRouter);
