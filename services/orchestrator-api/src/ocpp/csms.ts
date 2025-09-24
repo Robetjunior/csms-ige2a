@@ -18,6 +18,7 @@ import {
   stopSession,
   completeRemoteStopForTx
 } from '../services/repo';
+import { publish } from '@src/routes/stream';
 
 type Pending = { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout };
 
@@ -175,33 +176,66 @@ export class OcppCsms extends EventEmitter {
     try {
       switch (action) {
         case 'BootNotification': {
+          // aceita o boot e define intervalo de heartbeat
           ok({ status: 'Accepted', currentTime: new Date().toISOString(), interval: 180 });
+
+          // (opcional) provisionamento leve do charge box no banco poderia entrar aqui
+
+          // persiste evento
           try {
-            await insertEvento({ tipo: 'BootNotification', payload: p, chargeBoxId, idTag: null, transactionId: null });
-          } catch (e:any) { console.warn('[OCPP] insertEvento BootNotification falhou:', e?.message || e); }
+            await insertEvento({
+              tipo: 'BootNotification',
+              payload: p,
+              chargeBoxId,
+              idTag: null,
+              transactionId: null
+            });
+          } catch (e:any) {
+            console.warn('[OCPP] insertEvento BootNotification falhou:', e?.message || e);
+          }
           return;
         }
 
         case 'Authorize': {
           ok({ idTagInfo: { status: 'Accepted' } });
           try {
-            await insertEvento({ tipo: 'Authorize', payload: p, chargeBoxId, idTag: p?.idTag ?? null, transactionId: null });
-          } catch (e:any) { console.warn('[OCPP] insertEvento Authorize falhou:', e?.message || e); }
+            await insertEvento({
+              tipo: 'Authorize',
+              payload: p,
+              chargeBoxId,
+              idTag: p?.idTag ?? null,
+              transactionId: null
+            });
+          } catch (e:any) {
+            console.warn('[OCPP] insertEvento Authorize falhou:', e?.message || e);
+          }
           return;
         }
 
         case 'StartTransaction': {
           const startedAt = p?.timestamp ? new Date(p.timestamp) : new Date();
+
+          // gera um transactionId simples (como já fazia)
           let transactionId = Math.floor(Date.now() / 1000) % 1_000_000_000;
           if (transactionId <= 0) transactionId = 1;
 
+          // vincula tx ao charge box
           this.registry.bindTx(transactionId, chargeBoxId);
 
+          // responde ao CP
           ok({ transactionId, idTagInfo: { status: 'Accepted' } });
 
+          // persiste/atualiza sessão + eventos
           try {
-            await upsertSessionStart({ transactionId, chargeBoxId, idTag: p?.idTag ?? null, startedAt });
-          } catch (e:any) { console.warn('[OCPP] upsertSessionStart falhou:', e?.message || e); }
+            await upsertSessionStart({
+              transactionId,
+              chargeBoxId,
+              idTag: p?.idTag ?? null,
+              startedAt
+            });
+          } catch (e:any) {
+            console.warn('[OCPP] upsertSessionStart falhou:', e?.message || e);
+          }
 
           try {
             await insertEvento({
@@ -209,14 +243,30 @@ export class OcppCsms extends EventEmitter {
               payload: { ...p, transactionId },
               chargeBoxId,
               idTag: p?.idTag ?? null,
-              transactionId,
+              transactionId
             });
-          } catch (e:any) { console.warn('[OCPP] insertEvento StartTransaction falhou:', e?.message || e); }
+          } catch (e:any) {
+            console.warn('[OCPP] insertEvento StartTransaction falhou:', e?.message || e);
+          }
+
+          // 🔔 notifica frontend (SSE)
+          try {
+            publish({
+              type: 'session.started',
+              chargeBoxId,
+              transactionId,
+              idTag: p?.idTag ?? null,
+              startedAt: startedAt.toISOString()
+            });
+          } catch (e:any) {
+            console.warn('[OCPP] publish session.started falhou:', e?.message || e);
+          }
           return;
         }
 
         case 'MeterValues': {
           ack();
+
           const tx = Number(p?.transactionId);
           if (Number.isFinite(tx) && tx > 0) this.registry.bindTx(tx, chargeBoxId);
 
@@ -228,7 +278,9 @@ export class OcppCsms extends EventEmitter {
               idTag: null,
               transactionId: Number.isFinite(tx) && tx > 0 ? tx : null
             });
-          } catch (e:any) { console.warn('[OCPP] insertEvento MeterValues falhou:', e?.message || e); }
+          } catch (e:any) {
+            console.warn('[OCPP] insertEvento MeterValues falhou:', e?.message || e);
+          }
           return;
         }
 
@@ -236,47 +288,108 @@ export class OcppCsms extends EventEmitter {
           const tx = Number(p?.transactionId);
           const stoppedAt = p?.timestamp ? new Date(p.timestamp) : new Date();
 
+          // responde ao CP
           ack();
 
+          // fecha sessão + registra eventos
           try {
-            await stopSession({ transactionId: tx, stoppedAt, stopReason: p?.reason ?? 'Local' });
-          } catch (e:any) { console.warn('[OCPP] stopSession falhou:', e?.message || e); }
+            await stopSession({
+              transactionId: tx,
+              stoppedAt,
+              stopReason: p?.reason ?? 'Local'
+            });
+          } catch (e:any) {
+            console.warn('[OCPP] stopSession falhou:', e?.message || e);
+          }
 
           try {
-            await insertEvento({ tipo: 'StopTransaction', payload: p, chargeBoxId, idTag: null, transactionId: tx });
-          } catch (e:any) { console.warn('[OCPP] insertEvento StopTransaction falhou:', e?.message || e); }
+            await insertEvento({
+              tipo: 'StopTransaction',
+              payload: p,
+              chargeBoxId,
+              idTag: null,
+              transactionId: tx
+            });
+          } catch (e:any) {
+            console.warn('[OCPP] insertEvento StopTransaction falhou:', e?.message || e);
+          }
 
           try {
             const r = await completeRemoteStopForTx({ transactionId: tx, response: p });
             if (!r || (r as any).updated === false) {
               console.warn('[OCPP] completeRemoteStopForTx: nenhum comando atualizado p/ tx', tx);
             }
-          } catch (e:any) { console.warn('[OCPP] completeRemoteStopForTx falhou:', e?.message || e); }
+          } catch (e:any) {
+            console.warn('[OCPP] completeRemoteStopForTx falhou:', e?.message || e);
+          }
 
-          try { this.registry.clearTx(tx); } catch (e:any) { console.warn('[OCPP] clearTx falhou:', e?.message || e); }
+          try { this.registry.clearTx(tx); } catch (e:any) {
+            console.warn('[OCPP] clearTx falhou:', e?.message || e);
+          }
+
+          // 🔔 notifica frontend (SSE)
+          try {
+            publish({
+              type: 'session.stopped',
+              chargeBoxId,
+              transactionId: tx,
+              stoppedAt: stoppedAt.toISOString(),
+              reason: p?.reason ?? 'Local'
+            });
+          } catch (e:any) {
+            console.warn('[OCPP] publish session.stopped falhou:', e?.message || e);
+          }
           return;
         }
 
         case 'StatusNotification': {
           ack();
+
           try {
             const connectorId = Number(p?.connectorId) || 0;
             const when = p?.timestamp || new Date().toISOString();
+
+            // atualiza snapshot em memória
             this.registry.setConnectorStatus(
-              chargeBoxId, connectorId, p?.status ?? 'Unknown', p?.errorCode ?? '', when
+              chargeBoxId,
+              connectorId,
+              p?.status ?? 'Unknown',
+              p?.errorCode ?? '',
+              when
             );
-          } catch {}
+
+            // 🔔 (opcional) push de status para frontend
+            publish({
+              type: 'status.changed',
+              chargeBoxId,
+              connectorId,
+              status: p?.status ?? 'Unknown',
+              updatedAt: when
+            });
+          } catch (e:any) {
+            // segue o jogo, status em memória é best-effort
+          }
+
           try {
-            await insertEvento({ tipo: 'StatusNotification', payload: p, chargeBoxId, idTag: null, transactionId: null });
-          } catch (e:any) { console.warn('[OCPP] insertEvento StatusNotification falhou:', e?.message || e); }
+            await insertEvento({
+              tipo: 'StatusNotification',
+              payload: p,
+              chargeBoxId,
+              idTag: null,
+              transactionId: null
+            });
+          } catch (e:any) {
+            console.warn('[OCPP] insertEvento StatusNotification falhou:', e?.message || e);
+          }
           return;
         }
 
         case 'Heartbeat': {
           ok({ currentTime: new Date().toISOString() });
+
           try { this.registry.setHeartbeat(chargeBoxId); } catch {}
 
-          // ✅ PERSISTIR no Postgres p/ /online marcar "onlineRecently=true"
+          // persiste para "onlineRecently"
           try {
             await insertEvento({
               tipo: 'Heartbeat',
@@ -288,6 +401,13 @@ export class OcppCsms extends EventEmitter {
           } catch (e:any) {
             console.warn('[OCPP] insertEvento Heartbeat falhou:', e?.message || e);
           }
+
+          // 🔔 (opcional) push de heartbeat
+          try {
+            publish({ type: 'heartbeat', chargeBoxId, at: new Date().toISOString() });
+          } catch (e:any) {
+            console.warn('[OCPP] publish heartbeat falhou:', e?.message || e);
+          }
           return;
         }
 
@@ -296,23 +416,43 @@ export class OcppCsms extends EventEmitter {
         case 'FirmwareStatusNotification': {
           ok({ status: 'Accepted' });
           try {
-            await insertEvento({ tipo: action, payload: p, chargeBoxId, idTag: null, transactionId: null });
-          } catch (e:any) { console.warn(`[OCPP] insertEvento ${action} falhou:`, e?.message || e); }
+            await insertEvento({
+              tipo: action,
+              payload: p,
+              chargeBoxId,
+              idTag: null,
+              transactionId: null
+            });
+          } catch (e:any) {
+            console.warn(`[OCPP] insertEvento ${action} falhou:`, e?.message || e);
+          }
           return;
         }
 
         default: {
+          // ações não tratadas especificamente: só ack + log
           ack();
           try {
-            await insertEvento({ tipo: action, payload: p, chargeBoxId, idTag: null, transactionId: null });
-          } catch (e:any) { console.warn('[OCPP] insertEvento (default) falhou:', e?.message || e); }
+            await insertEvento({
+              tipo: action,
+              payload: p,
+              chargeBoxId,
+              idTag: null,
+              transactionId: null
+            });
+          } catch (e:any) {
+            console.warn('[OCPP] insertEvento (default) falhou:', e?.message || e);
+          }
           return;
         }
       }
     } catch (err:any) {
-      console.error('[OCPP] handleCall error (sem sendError):', { chargeBoxId, action, err: err?.message || err });
+      console.error('[OCPP] handleCall error (sem sendError):', {
+        chargeBoxId, action, err: err?.message || err
+      });
     }
   }
+
 
   private sendCall(ws: WebSocket, action: string, payload: any) {
     const uid = crypto.randomUUID().replace(/-/g, '');
