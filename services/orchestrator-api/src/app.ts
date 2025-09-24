@@ -49,6 +49,8 @@ if (DOCS_ENABLED) {
 }
 app.use('/v1/debug', debugRouter);
 app.use('/v1/ocpp', ocppDebug);
+app.use('/v1/events', streamRouter);   
+app.use('/v1/stream', streamRouter);
 
 // 🔐 A partir daqui, /v1/** exige X-API-Key e rate limit
 app.use('/v1', requireApiKey(), buildRateLimiter());
@@ -61,7 +63,7 @@ app.use('/v1/sessions', sessionsRouter);
 app.use('/v1/sessions', sessionsProgressRouter);
 app.use('/v1/chargers', chargersRouter);
 app.use('/v1/actions', actionsRouter);
-app.use('/v1/stream', streamRouter);
+
 
 app.use('/v1/metrics', metricsRouter);
 app.use('/v1/metrics-advanced', metricsAdvancedRouter);
