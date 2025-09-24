@@ -18,7 +18,7 @@ import {
   stopSession,
   completeRemoteStopForTx
 } from '../services/repo';
-import { publish } from '@src/routes/stream';
+import { publish } from '../routes/stream';
 
 type Pending = { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout };
 
