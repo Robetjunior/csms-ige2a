@@ -275,6 +275,19 @@ export class OcppCsms extends EventEmitter {
         case 'Heartbeat': {
           ok({ currentTime: new Date().toISOString() });
           try { this.registry.setHeartbeat(chargeBoxId); } catch {}
+
+          // ✅ PERSISTIR no Postgres p/ /online marcar "onlineRecently=true"
+          try {
+            await insertEvento({
+              tipo: 'Heartbeat',
+              payload: p,
+              chargeBoxId,
+              idTag: null,
+              transactionId: null
+            });
+          } catch (e:any) {
+            console.warn('[OCPP] insertEvento Heartbeat falhou:', e?.message || e);
+          }
           return;
         }
 
