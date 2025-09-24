@@ -47,27 +47,26 @@ if (DOCS_ENABLED) {
 } else {
   console.warn('[docs] desabilitado (ENABLE_DOCS=0)');
 }
+
+// ---- Rotas públicas (se quiser proteger, mova após o middleware de auth) ----
 app.use('/v1/debug', debugRouter);
 app.use('/v1/ocpp', ocppDebug);
-app.use('/v1/events', streamRouter);   
+
+// 🔊 SSE público (não exige X-API-Key)
 app.use('/v1/stream', streamRouter);
 
 // 🔐 A partir daqui, /v1/** exige X-API-Key e rate limit
 app.use('/v1', requireApiKey(), buildRateLimiter());
 
-// Rotas
-app.use('/v1/events', eventsRouter);
-app.use('/v1/ocpp',  eventsRouter); 
+// ---- Rotas autenticadas ----
+app.use('/v1/events', eventsRouter); // REST normal (não SSE)
 app.use('/v1/commands', commandsRouter);
 app.use('/v1/sessions', sessionsRouter);
 app.use('/v1/sessions', sessionsProgressRouter);
 app.use('/v1/chargers', chargersRouter);
 app.use('/v1/actions', actionsRouter);
-
-
 app.use('/v1/metrics', metricsRouter);
 app.use('/v1/metrics-advanced', metricsAdvancedRouter);
-
 app.use('/v1/tariffs', tariffsRouter);
 app.use('/v1/billing', billingRouter);
 

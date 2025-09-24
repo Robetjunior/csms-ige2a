@@ -169,6 +169,18 @@ export class OcppCsms extends EventEmitter {
     });
   }
 
+  private emitStatusChanged(chargeBoxId: string, connectorId: number, status: string, whenISO?: string) {
+    const at = whenISO ?? new Date().toISOString();
+    try {
+      this.registry.setConnectorStatus(chargeBoxId, connectorId, status, '', at);
+    } catch {}
+    try {
+      publish({ type: 'status.changed', chargeBoxId, connectorId, status, updatedAt: at });
+    } catch (e:any) {
+      console.warn('[OCPP] publish status.changed falhou:', e?.message || e);
+    }
+  }
+
   private async handleCall(ws: WebSocket, chargeBoxId: string, uid: string, action: string, p: any) {
     const ok  = (payload: any) => this.sendResult(ws, uid, payload);
     const ack = () => this.sendResult(ws, uid, {});
@@ -214,28 +226,15 @@ export class OcppCsms extends EventEmitter {
 
         case 'StartTransaction': {
           const startedAt = p?.timestamp ? new Date(p.timestamp) : new Date();
-
-          // gera um transactionId simples (como já fazia)
           let transactionId = Math.floor(Date.now() / 1000) % 1_000_000_000;
           if (transactionId <= 0) transactionId = 1;
 
-          // vincula tx ao charge box
           this.registry.bindTx(transactionId, chargeBoxId);
-
-          // responde ao CP
           ok({ transactionId, idTagInfo: { status: 'Accepted' } });
 
-          // persiste/atualiza sessão + eventos
           try {
-            await upsertSessionStart({
-              transactionId,
-              chargeBoxId,
-              idTag: p?.idTag ?? null,
-              startedAt
-            });
-          } catch (e:any) {
-            console.warn('[OCPP] upsertSessionStart falhou:', e?.message || e);
-          }
+            await upsertSessionStart({ transactionId, chargeBoxId, idTag: p?.idTag ?? null, startedAt });
+          } catch (e:any) { console.warn('[OCPP] upsertSessionStart falhou:', e?.message || e); }
 
           try {
             await insertEvento({
@@ -243,13 +242,12 @@ export class OcppCsms extends EventEmitter {
               payload: { ...p, transactionId },
               chargeBoxId,
               idTag: p?.idTag ?? null,
-              transactionId
+              transactionId,
             });
-          } catch (e:any) {
-            console.warn('[OCPP] insertEvento StartTransaction falhou:', e?.message || e);
-          }
+          } catch (e:any) { console.warn('[OCPP] insertEvento StartTransaction falhou:', e?.message || e); }
 
-          // 🔔 notifica frontend (SSE)
+          // 🔔 eventos realtime
+          // 2.1) manter session.started (front já usa)
           try {
             publish({
               type: 'session.started',
@@ -261,6 +259,10 @@ export class OcppCsms extends EventEmitter {
           } catch (e:any) {
             console.warn('[OCPP] publish session.started falhou:', e?.message || e);
           }
+
+          // 2.2) **NOVO**: sintetizar "Charging" para o connectorId informado
+          const connectorId = Number(p?.connectorId) || 1;
+          this.emitStatusChanged(chargeBoxId, connectorId, 'Charging', startedAt.toISOString());
           return;
         }
 
@@ -288,57 +290,33 @@ export class OcppCsms extends EventEmitter {
           const tx = Number(p?.transactionId);
           const stoppedAt = p?.timestamp ? new Date(p.timestamp) : new Date();
 
-          // responde ao CP
           ack();
 
-          // fecha sessão + registra eventos
           try {
-            await stopSession({
-              transactionId: tx,
-              stoppedAt,
-              stopReason: p?.reason ?? 'Local'
-            });
-          } catch (e:any) {
-            console.warn('[OCPP] stopSession falhou:', e?.message || e);
-          }
+            await stopSession({ transactionId: tx, stoppedAt, stopReason: p?.reason ?? 'Local' });
+          } catch (e:any) { console.warn('[OCPP] stopSession falhou:', e?.message || e); }
 
           try {
-            await insertEvento({
-              tipo: 'StopTransaction',
-              payload: p,
-              chargeBoxId,
-              idTag: null,
-              transactionId: tx
-            });
-          } catch (e:any) {
-            console.warn('[OCPP] insertEvento StopTransaction falhou:', e?.message || e);
-          }
+            await insertEvento({ tipo: 'StopTransaction', payload: p, chargeBoxId, idTag: null, transactionId: tx });
+          } catch (e:any) { console.warn('[OCPP] insertEvento StopTransaction falhou:', e?.message || e); }
 
           try {
             const r = await completeRemoteStopForTx({ transactionId: tx, response: p });
             if (!r || (r as any).updated === false) {
               console.warn('[OCPP] completeRemoteStopForTx: nenhum comando atualizado p/ tx', tx);
             }
-          } catch (e:any) {
-            console.warn('[OCPP] completeRemoteStopForTx falhou:', e?.message || e);
-          }
+          } catch (e:any) { console.warn('[OCPP] completeRemoteStopForTx falhou:', e?.message || e); }
 
-          try { this.registry.clearTx(tx); } catch (e:any) {
-            console.warn('[OCPP] clearTx falhou:', e?.message || e);
-          }
+          try { this.registry.clearTx(tx); } catch (e:any) { console.warn('[OCPP] clearTx falhou:', e?.message || e); }
 
-          // 🔔 notifica frontend (SSE)
+          // 🔔 realtime: session.stopped já existia
           try {
-            publish({
-              type: 'session.stopped',
-              chargeBoxId,
-              transactionId: tx,
-              stoppedAt: stoppedAt.toISOString(),
-              reason: p?.reason ?? 'Local'
-            });
-          } catch (e:any) {
-            console.warn('[OCPP] publish session.stopped falhou:', e?.message || e);
-          }
+            publish({ type: 'session.stopped', chargeBoxId, transactionId: tx, stoppedAt: stoppedAt.toISOString(), reason: p?.reason ?? 'Local' });
+          } catch (e:any) { console.warn('[OCPP] publish session.stopped falhou:', e?.message || e); }
+
+          // **NOVO**: devolver status "Available" para o connector 1 (se seu ambiente mapear isso diferente, ajuste)
+          const connectorId = Number(p?.connectorId) || 1;
+          this.emitStatusChanged(chargeBoxId, connectorId, 'Available', stoppedAt.toISOString());
           return;
         }
 
