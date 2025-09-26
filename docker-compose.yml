@@ -1,100 +1,20 @@
 services:
-  postgres:
-    image: postgres:15
-    container_name: csms_postgres
-    profiles: ["dev"]                 # Só para desenvolvimento local
-    environment:
-      POSTGRES_USER: csms
-      POSTGRES_PASSWORD: csms
-      POSTGRES_DB: csms
-      TZ: UTC
-    ports:
-      - "5433:5432"
-    volumes:
-      - ./.data/postgres:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U csms -d csms || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-    restart: unless-stopped
-    mem_limit: 512m
-    cpus: 0.75
-
-  mariadb:
-    image: mariadb:10.6
-    container_name: csms_mariadb
-    environment:
-      MARIADB_ROOT_PASSWORD: root
-      MARIADB_DATABASE: steve
-      MARIADB_USER: steve
-      MARIADB_PASSWORD: steve
-      TZ: UTC
-    command:
-      - mysqld
-      - --default-time-zone=+00:00
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_unicode_ci
-    ports:
-      - "3307:3306"
-    volumes:
-      - ./.data/mariadb:/var/lib/mysql
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -usteve -p$MARIADB_PASSWORD -h 127.0.0.1 --silent"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-    restart: unless-stopped
-    mem_limit: 512m
-    cpus: 0.75
-
-  steve:
-    image: eclipse-temurin:17-jre
-    container_name: csms_steve
-    depends_on:
-      mariadb:
-        condition: service_healthy
-    working_dir: /app
-    volumes:
-      - ./services/tools/steve:/app
-      - ./.logs/steve:/app/logs
-    command:
-      - java
-      - -Duser.home=/app
-      - -DLOG_DIR=/app/logs
-      - -Dlogback.configurationFile=/app/logback.xml
-      - -Dspring.config.location=/app/steve.properties
-      - -Dsteve.config=/app/steve.properties
-      - -Dsteve.config.location=/app/steve.properties
-      - -cp
-      - steve.jar:lib/*
-      - de.rwth.idsg.steve.Application
-    environment:
-      TZ: UTC
-      STEVE_DB_URL: jdbc:mariadb://mariadb:3306/steve
-      STEVE_DB_USER: steve
-      STEVE_DB_PASS: steve
-      JAVA_TOOL_OPTIONS: "-Xms256m -Xmx512m"
-    ports:
-      - "8180:8180"
-    restart: unless-stopped
-    mem_limit: 600m
-    cpus: 1.5
-
   orchestrator:
     image: node:20-alpine
     container_name: csms_orchestrator
     working_dir: /app
+
     volumes:
       - ./services/orchestrator-api:/app
       - /app/node_modules
-      # Opcional: autoridade interna (se existir)
-      - ./certs/corp-ca.crt:/usr/local/share/ca-certificates/corp-ca.crt:ro
+      # (remova se não usa CA corporativo)
+      # - ./certs/corp-ca.crt:/usr/local/share/ca-certificates/corp-ca.crt:ro
+
     dns:
       - 1.1.1.1
       - 8.8.8.8
 
-    # ✅ Carrega variáveis de services/orchestrator-api/.env (POSTGRES_URI, SUPABASE_*, ORCH_API_KEY etc.)
+    # carrega variáveis do serviço (inclui SUPABASE_URL/KEY e POSTGRES_URI)
     env_file:
       - ./services/orchestrator-api/.env
 
@@ -103,21 +23,16 @@ services:
       TZ: UTC
       PORT: "3000"
       PG_POOL_MAX: "10"
-      PG_SSL_REJECT_UNAUTHORIZED: "0"
-      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      # Descomente somente se precisar desligar verificação de certificado (não recomendado)
+      # NODE_TLS_REJECT_UNAUTHORIZED: "0"
 
-      # SteVe (MariaDB)
-      MARIADB_HOST: mariadb
-      MARIADB_PORT: "3306"
-      MARIADB_USER: steve
-      MARIADB_PASSWORD: steve
-      MARIADB_DATABASE: steve
+      # Engine OCPP (placeholder)
+      OCPP_ENGINE_KIND: mock
+      OCPP_ENGINE_URL: ""
 
-      # HTTP
+      # Dev
       CHOKIDAR_USEPOLLING: "true"
       ORCH_API_KEY: ${ORCH_API_KEY:-minha_chave_super_secreta}
-
-      # Prioriza IPv4
       NODE_OPTIONS: "--dns-result-order=ipv4first"
 
     command: >
@@ -127,17 +42,17 @@ services:
               corepack prepare pnpm@10.14.0 --activate &&
               pnpm install &&
               pnpm dev"
+
     ports:
       - "3000:3000"
-    depends_on:
-      mariadb:
-        condition: service_healthy
+
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/readiness || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 20s
+
     restart: unless-stopped
     mem_limit: 256m
     cpus: 1.0

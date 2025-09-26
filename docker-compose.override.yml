@@ -1,14 +1,78 @@
-version: "3.9"
+# docker-compose.override.yml (DEV)
+# - sem `version:` (evita o warning do Compose v2)
+# - NENHUMA referência a SteVe/MariaDB
+# - ignora env_file do orchestrator para evitar variáveis legadas
 
 services:
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.47.2
-    container_name: csms_cadvisor
+    # substitui o mapeamento de portas do arquivo base
     ports:
-      - "8181:8080"   # porta do host = 8181 (livre); porta do container segue 8080
+      - "8181:8080"
+
+  orchestrator:
+    # ignora o .env do serviço (evita STEVE_*/MARIADB_* e chaves do Supabase caírem aqui)
+    env_file: []
+    environment:
+      NODE_ENV: development
+      TZ: UTC
+      PORT: "3000"
+
+      # Postgres local (bate com o serviço `postgres`)
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: csms
+      PGUSER: csms
+      PGPASSWORD: csms
+      PG_POOL_MAX: "10"
+      PG_SSL_REJECT_UNAUTHORIZED: "0"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+
+      # Engine OCPP abstrato (placeholder)
+      OCPP_ENGINE_KIND: mock
+      OCPP_ENGINE_URL: ""
+
+      # Conveniências de DEV
+      ENABLE_DOCS: "1"
+      DASHBOARD_ORIGINS: "http://localhost:5173"
+      OCPP_CALL_TIMEOUT_MS: "15000"
+      OCPP_PING_MS: "30000"
+      ORCH_API_KEY: "minha_chave_super_secreta"
+      NODE_OPTIONS: "--dns-result-order=ipv4first"
+
+    # mounts de dev; `:delegated` ajuda desempenho no Windows
     volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:rw
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-    restart: unless-stopped
+      - ./services/orchestrator-api:/app:delegated
+      - /app/node_modules
+      - ./certs/corp-ca.crt:/usr/local/share/ca-certificates/corp-ca.crt:ro
+
+    # limita crescimento de logs
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  postgres:
+    # mantém portas e dados locais explícitos aqui no override
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./.data/postgres:/var/lib/postgresql/data
+    environment:
+      TZ: UTC
+
+  prometheus:
+    ports:
+      - "9090:9090"
+
+  grafana:
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "admin"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s:%(http_port)s/"
+      TZ: UTC
+    volumes:
+      - ./.data/grafana:/var/lib/grafana
