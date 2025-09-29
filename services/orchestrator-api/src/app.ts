@@ -20,6 +20,8 @@ import { streamRouter } from './routes/stream';
 import { buildCors, buildRateLimiter } from './config/http';
 import { requireApiKey } from './middleware/apiKey';
 
+import { metricsMiddleware, metricsHandler } from './metrics';
+
 const app = express();
 
 app.use(express.json());
@@ -27,6 +29,10 @@ app.use(buildCors());
 
 // Health/Ready (sem auth)
 app.get('/health', (_req: Request, res: Response) => res.json({ ok: true }));
+
+// 🔭 Metrics Prometheus (sem auth)
+app.use(metricsMiddleware);
+app.get('/metrics', metricsHandler);
 
 // ---- DOCS ----
 const OPENAPI_FILE = path.resolve(process.cwd(), 'openapi.yaml');
