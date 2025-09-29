@@ -1,4 +1,4 @@
-services:
+﻿services:
   orchestrator:
     image: node:20-alpine
     container_name: csms_orchestrator
@@ -7,14 +7,14 @@ services:
     volumes:
       - ./services/orchestrator-api:/app
       - /app/node_modules
-      # (remova se não usa CA corporativo)
+      # (remova se nÃ£o usa CA corporativo)
       # - ./certs/corp-ca.crt:/usr/local/share/ca-certificates/corp-ca.crt:ro
 
     dns:
       - 1.1.1.1
       - 8.8.8.8
 
-    # carrega variáveis do serviço (inclui SUPABASE_URL/KEY e POSTGRES_URI)
+    # carrega variÃ¡veis do serviÃ§o (inclui SUPABASE_URL/KEY e POSTGRES_URI)
     env_file:
       - ./services/orchestrator-api/.env
 
@@ -23,7 +23,7 @@ services:
       TZ: UTC
       PORT: "3000"
       PG_POOL_MAX: "10"
-      # Descomente somente se precisar desligar verificação de certificado (não recomendado)
+      # Descomente somente se precisar desligar verificaÃ§Ã£o de certificado (nÃ£o recomendado)
       # NODE_TLS_REJECT_UNAUTHORIZED: "0"
 
       # Engine OCPP (placeholder)
@@ -112,3 +112,4 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     cpus: 0.5
+

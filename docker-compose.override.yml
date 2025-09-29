@@ -1,7 +1,7 @@
-# docker-compose.override.yml (DEV)
+﻿# docker-compose.override.yml (DEV)
 # - sem `version:` (evita o warning do Compose v2)
-# - NENHUMA referência a SteVe/MariaDB
-# - ignora env_file do orchestrator para evitar variáveis legadas
+# - NENHUMA referÃªncia a SteVe/MariaDB
+# - ignora env_file do orchestrator para evitar variÃ¡veis legadas
 
 services:
   cadvisor:
@@ -10,14 +10,14 @@ services:
       - "8181:8080"
 
   orchestrator:
-    # ignora o .env do serviço (evita STEVE_*/MARIADB_* e chaves do Supabase caírem aqui)
+    # ignora o .env do serviÃ§o (evita STEVE_*/MARIADB_* e chaves do Supabase caÃ­rem aqui)
     env_file: []
     environment:
       NODE_ENV: development
       TZ: UTC
       PORT: "3000"
 
-      # Postgres local (bate com o serviço `postgres`)
+      # Postgres local (bate com o serviÃ§o `postgres`)
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: csms
@@ -29,7 +29,7 @@ services:
       OCPP_ENGINE_KIND: mock
       OCPP_ENGINE_URL: ""
 
-      # Conveniências de DEV
+      # ConveniÃªncias de DEV
       ENABLE_DOCS: "1"
       DASHBOARD_ORIGINS: "http://localhost:5173"
       OCPP_CALL_TIMEOUT_MS: "15000"
@@ -50,7 +50,7 @@ services:
         max-file: "3"
 
   postgres:
-    # mantém portas e dados locais explícitos aqui no override
+    # mantÃ©m portas e dados locais explÃ­citos aqui no override
     ports:
       - "5433:5432"
     volumes:
@@ -73,3 +73,4 @@ services:
       TZ: UTC
     volumes:
       - ./.data/grafana:/var/lib/grafana
+
