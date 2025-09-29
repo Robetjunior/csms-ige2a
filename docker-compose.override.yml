@@ -24,8 +24,6 @@ services:
       PGUSER: csms
       PGPASSWORD: csms
       PG_POOL_MAX: "10"
-      PG_SSL_REJECT_UNAUTHORIZED: "0"
-      NODE_TLS_REJECT_UNAUTHORIZED: "0"
 
       # Engine OCPP abstrato (placeholder)
       OCPP_ENGINE_KIND: mock
@@ -43,7 +41,6 @@ services:
     volumes:
       - ./services/orchestrator-api:/app:delegated
       - /app/node_modules
-      - ./certs/corp-ca.crt:/usr/local/share/ca-certificates/corp-ca.crt:ro
 
     # limita crescimento de logs
     logging:
