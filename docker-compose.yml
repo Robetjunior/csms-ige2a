@@ -24,7 +24,6 @@
       PORT: "3000"
       PG_POOL_MAX: "10"
       # Descomente somente se precisar desligar verificaÃ§Ã£o de certificado (nÃ£o recomendado)
-      # NODE_TLS_REJECT_UNAUTHORIZED: "0"
 
       # Engine OCPP (placeholder)
       OCPP_ENGINE_KIND: mock
@@ -112,4 +111,5 @@
     restart: unless-stopped
     mem_limit: 256m
     cpus: 0.5
+
 
