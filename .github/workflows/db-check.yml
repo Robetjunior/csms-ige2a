@@ -1,0 +1,21 @@
+name: db-migrations-check
+on:
+  pull_request:
+    paths:
+      - "supabase/migrations/**"
+      - ".github/workflows/db-check.yml"
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Supabase CLI
+        run: |
+          curl -fsSL https://github.com/supabase/cli/releases/latest/download/supabase_linux_amd64.tar.gz | tar -xz
+          sudo mv supabase /usr/local/bin/supabase
+          supabase --version
+      - name: Verify migrations (dry-run)
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          supabase db push --db-url "$SUPABASE_DB_URL" --dry-run
