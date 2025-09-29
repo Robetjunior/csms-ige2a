@@ -4,10 +4,16 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: cadvisor
-    static_configs:
-      - targets: ["cadvisor:8080"]
-
   - job_name: prometheus
     static_configs:
-      - targets: ["prometheus:9090"]
+      - targets: ['prometheus:9090']
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  - job_name: orchestrator
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['orchestrator-api:3000']  # se o orquestrador roda como serviço no Compose
+      # - targets: ['host.docker.internal:3000']  # use esta linha se o orquestrador roda FORA do Compose
