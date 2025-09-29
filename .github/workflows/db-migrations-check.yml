@@ -5,40 +5,40 @@ on:
     paths:
       - "supabase/migrations/**"
       - ".github/workflows/db-migrations-check.yml"
+      - ".github/workflows/db-check.yml" # cobre o antigo, caso ainda exista
 
 permissions:
   contents: read
 
 jobs:
   check:
-    # Só roda em PRs que NÃO são de fork
+    # só roda em PRs que NÃO são de fork
     if: ${{ !github.event.pull_request.head.repo.fork }}
     runs-on: ubuntu-latest
-    env:
-      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
     steps:
       - uses: actions/checkout@v4
 
+      # Instala Supabase CLI (sem curl/tar)
       - name: Setup Supabase CLI
-        if: ${{ env.SUPABASE_DB_URL != '' }}
         uses: supabase/setup-cli@v1
         with:
           version: latest
 
       - name: Show Supabase CLI version
-        if: ${{ env.SUPABASE_DB_URL != '' }}
         run: supabase --version
 
+      # Se o secret não existir, só escreve um aviso e sai com sucesso
       - name: Verify migrations (dry-run)
-        if: ${{ env.SUPABASE_DB_URL != '' }}
-        run: supabase db push --db-url "$SUPABASE_DB_URL" --dry-run
-
-      - name: Skip (no SUPABASE_DB_URL secret set)
-        if: ${{ env.SUPABASE_DB_URL == '' }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
-          echo "⏭️  Pulando verificação de migrações: **SUPABASE_DB_URL** não está definido." | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Defina o secret **SUPABASE_DB_URL** nos secrets do repositório para habilitar este check." >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "${SUPABASE_DB_URL}" ]; then
+            echo "⏭️  Pulando verificação de migrações: **SUPABASE_DB_URL** não está definido." >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Defina o secret **SUPABASE_DB_URL** nos secrets do repositório para habilitar este check." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          supabase db push --db-url "$SUPABASE_DB_URL" --dry-run
 
   # Mensagem amigável para PRs vindos de fork (sem secrets)
   skip-fork:
