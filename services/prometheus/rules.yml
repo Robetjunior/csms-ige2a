@@ -1,0 +1,22 @@
+﻿groups:
+  - name: csms_latency_rates
+    interval: 30s
+    rules:
+      - record: http_request_duration_seconds:p95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, method, route) (rate(http_request_duration_seconds_bucket[5m]))
+          )
+      - record: http_request_duration_seconds:p99
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, method, route) (rate(http_request_duration_seconds_bucket[5m]))
+          )
+      - record: http_requests:rps
+        expr: |
+          sum by (method, route) (rate(http_requests_total[1m]))
+      - record: http_requests:5xx_rate
+        expr: |
+          100 * sum(rate(http_requests_total{code=~"5.."}[5m]))
+              / ignoring(code)
+                sum(rate(http_requests_total[5m]))
