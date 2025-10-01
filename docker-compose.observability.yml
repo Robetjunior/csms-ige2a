@@ -13,6 +13,8 @@
       - prom_data:/prometheus
     depends_on:
       - cadvisor
+    networks:
+      - default
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.52.1
@@ -26,6 +28,8 @@
       - /var/run:/var/run:ro
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
+    networks:
+      - default
 
   grafana:
     image: grafana/grafana:11.2.0
@@ -39,6 +43,10 @@
     volumes:
       - ./services/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - default
 
 volumes:
   prom_data:
@@ -47,5 +55,5 @@ volumes:
 networks:
   default:
     external: true
+    # Use a rede do projeto (ajuste se precisar)
     name: csms-ige2a_default
-
