@@ -1,24 +1,24 @@
-{
-  "name": "csms-ige2a",
-  "author": "José Roberto Ferreira Junior",
-  "private": true,
-  "packageManager": "pnpm@10.14.0",
-  "version": "0.1.0",
-  "description": "",
-  "main": "index.js",
-  "workspaces": [
-    "services/*",
-    "packages/*"
-  ],
-  "scripts": {
-    "dev:api": "pnpm --filter orchestrator-api dev",
-    "dev:web": "pnpm --filter web-dashboard dev",
-    "build": "pnpm -r build",
-    "lint": "pnpm -r lint",
-    "test": "pnpm -r test",
-    "dev": "ts-node-dev --respawn --transpile-only --poll --interval 300 src/main.ts",
-    "test": "jest --runInBand"
-  },
-  "keywords": [],
-  "license": "ISC"
+﻿{
+    "name":  "csms-ige2a",
+    "author":  "JosÃ© Roberto Ferreira Junior",
+    "private":  true,
+    "packageManager":  "pnpm@10.14.0",
+    "version":  "0.1.0",
+    "description":  "",
+    "main":  "index.js",
+    "workspaces":  [
+                       "services/*"
+                   ],
+    "scripts":  {
+                    "dev:api":  "pnpm --filter orchestrator-api dev",
+                    "dev:web":  "pnpm --filter web-dashboard dev",
+                    "build":  "pnpm -r build",
+                    "lint":  "pnpm -r lint",
+                    "test":  "jest --runInBand",
+                    "dev":  "ts-node-dev --respawn --transpile-only --poll --interval 300 src/main.ts"
+                },
+    "keywords":  [
+
+                 ],
+    "license":  "ISC"
 }
