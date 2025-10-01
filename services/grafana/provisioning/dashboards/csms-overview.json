@@ -1,0 +1,25 @@
+﻿{
+  "id": null,
+  "uid": "csms-overview",
+  "title": "CSMS — Visão Geral",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    { "type": "stat", "title": "RPS (geral, 1m)", "gridPos": {"h":4,"w":6,"x":0,"y":0},
+      "targets": [{"expr":"sum(rate(http_requests_total[1m]))","legendFormat":"RPS"}] },
+    { "type": "stat", "title": "Erro 5xx (%)", "gridPos": {"h":4,"w":6,"x":6,"y":0},
+      "targets": [{"expr":"100 * sum(rate(http_requests_total{code=~\"5..\"}[5m])) / ignoring(code) sum(rate(http_requests_total[5m]))"}] },
+    { "type": "stat", "title": "p95 (s)", "gridPos": {"h":4,"w":6,"x":12,"y":0},
+      "targets": [{"expr":"max(http_request_duration_seconds:p95)"}] },
+    { "type": "stat", "title": "p99 (s)", "gridPos": {"h":4,"w":6,"x":18,"y":0},
+      "targets": [{"expr":"max(http_request_duration_seconds:p99)"}] },
+    { "type": "timeseries", "title": "Latência por rota (p95)", "gridPos": {"h":9,"w":12,"x":0,"y":4}, "legend": {"show": true},
+      "targets": [{"expr":"http_request_duration_seconds:p95","legendFormat":"{{method}} {{route}}"}] },
+    { "type": "timeseries", "title": "CPU/Mem (cAdvisor)", "gridPos": {"h":9,"w":12,"x":12,"y":4}, "legend": {"show": true},
+      "targets": [
+        {"expr":"sum(rate(container_cpu_usage_seconds_total{container!=\"\",image!=\"\"}[5m])) by (container)","legendFormat":"CPU {{container}}"},
+        {"expr":"sum(container_memory_working_set_bytes{container!=\"\",image!=\"\"}) by (container)","legendFormat":"Mem {{container}}"}
+      ] }
+  ]
+}
