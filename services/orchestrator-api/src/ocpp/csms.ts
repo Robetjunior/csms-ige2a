@@ -19,6 +19,7 @@ import {
   completeRemoteStopForTx
 } from '../services/repo';
 import { publish } from '../routes/stream';
+import { telemetryManager } from '../services/telemetry-manager';
 
 type Pending = { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout };
 
@@ -234,6 +235,15 @@ export class OcppCsms extends EventEmitter {
 
           try {
             await upsertSessionStart({ transactionId, chargeBoxId, idTag: p?.idTag ?? null, startedAt });
+            
+            // Registra sessão no telemetry manager
+            telemetryManager.startSession({
+              transactionId,
+              chargeBoxId,
+              startedAt,
+              meterStartWh: Number(p?.meterStart ?? 0),
+              idTag: p?.idTag ?? null,
+            });
           } catch (e:any) { console.warn('[OCPP] upsertSessionStart falhou:', e?.message || e); }
 
           try {
@@ -283,6 +293,14 @@ export class OcppCsms extends EventEmitter {
           } catch (e:any) {
             console.warn('[OCPP] insertEvento MeterValues falhou:', e?.message || e);
           }
+
+          // Processa telemetria em tempo real
+          try {
+            await telemetryManager.processMeterValues(chargeBoxId, p);
+          } catch (e:any) {
+            console.warn('[OCPP] telemetryManager.processMeterValues falhou:', e?.message || e);
+          }
+          
           return;
         }
 
@@ -294,6 +312,9 @@ export class OcppCsms extends EventEmitter {
 
           try {
             await stopSession({ transactionId: tx, stoppedAt, stopReason: p?.reason ?? 'Local' });
+            
+            // Remove sessão do telemetry manager
+            telemetryManager.stopSession(tx);
           } catch (e:any) { console.warn('[OCPP] stopSession falhou:', e?.message || e); }
 
           try {
