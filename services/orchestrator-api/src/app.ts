@@ -12,10 +12,12 @@ import metricsRouter from './routes/metrics';
 import metricsAdvancedRouter from './routes/metrics-advanced';
 import tariffsRouter from './routes/tariffs';
 import billingRouter from './routes/billing';
+import telemetryStatusRouter from './routes/telemetry-status';
 import debugRouter from './routes/debug';
 import actionsRouter from './routes/actions';
 import ocppDebug from './routes/ocpp-debug';
 import { streamRouter } from './routes/stream';
+import telemetryStatusRouter from './api/telemetry-status';
 
 import { buildCors, buildRateLimiter } from './config/http';
 import { requireApiKey } from './middleware/apiKey';
@@ -75,5 +77,6 @@ app.use('/v1/metrics', metricsRouter);
 app.use('/v1/metrics-advanced', metricsAdvancedRouter);
 app.use('/v1/tariffs', tariffsRouter);
 app.use('/v1/billing', billingRouter);
+app.use('/v1/telemetry', telemetryStatusRouter);
 
 export default app;

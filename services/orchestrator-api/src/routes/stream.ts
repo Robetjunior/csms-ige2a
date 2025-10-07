@@ -6,9 +6,20 @@ export type BusEvent =
   | { type: 'session.started'; chargeBoxId: string; transactionId: number; idTag?: string | null; startedAt: string }
   | { type: 'session.stopped'; chargeBoxId: string; transactionId: number; stoppedAt: string; reason?: string }
   | { type: 'status.changed'; chargeBoxId: string; connectorId: number; status: string; updatedAt: string }
-  | { type: 'heartbeat';      chargeBoxId: string; at: string };
+  | { type: 'heartbeat';      chargeBoxId: string; at: string }
+  | { type: 'telemetry.updated'; chargeBoxId: string; transactionId: number; telemetry: TelemetryData; updatedAt: string };
 
-type OutEventName = 'session-start' | 'session-end' | 'status-change' | 'heartbeat';
+export type TelemetryData = {
+  power_kw?: number;           // Potência atual em kW
+  energy_kwh?: number;         // Energia acumulada em kWh
+  voltage_v?: number;          // Tensão em V
+  current_a?: number;          // Corrente em A
+  soc_percent?: number;        // Estado de carga em %
+  duration_seconds?: number;   // Duração da sessão em segundos
+  temperature_c?: number;      // Temperatura em °C
+};
+
+type OutEventName = 'session-start' | 'session-end' | 'status-change' | 'heartbeat' | 'telemetry-updated';
 type Format = 'sse' | 'ndjson';
 
 type Client = {
@@ -27,7 +38,7 @@ const StreamQuery = z.object({
   pingMs: z.coerce.number().int().min(5000).max(60000).optional().default(15000),
 });
 
-const DEFAULT_TYPES: OutEventName[] = ['heartbeat','status-change','session-start','session-end'];
+const DEFAULT_TYPES: OutEventName[] = ['heartbeat','status-change','session-start','session-end','telemetry-updated'];
 
 function mapInternalToExternal(e: BusEvent): { name: OutEventName; payload: any; cbid: string } {
   switch (e.type) {
@@ -35,6 +46,7 @@ function mapInternalToExternal(e: BusEvent): { name: OutEventName; payload: any;
     case 'session.stopped': return { name: 'session-end',   cbid: e.chargeBoxId, payload: { ...e, type: 'session-end' } };
     case 'status.changed':  return { name: 'status-change', cbid: e.chargeBoxId, payload: { ...e, type: 'status-change' } };
     case 'heartbeat':       return { name: 'heartbeat',     cbid: e.chargeBoxId, payload: { ...e, type: 'heartbeat' } };
+    case 'telemetry.updated': return { name: 'telemetry-updated', cbid: e.chargeBoxId, payload: { ...e, type: 'telemetry-updated' } };
   }
 }
 
