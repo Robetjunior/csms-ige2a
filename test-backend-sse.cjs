@@ -12,7 +12,7 @@ const { EventSource } = require('eventsource');
 const fetch = require('node-fetch');
 
 // Configurações de teste
-const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3000';
+const BACKEND_URL = process.env.BACKEND_URL || 'http://35.231.137.231:3000';
 const SSE_ENDPOINT = `${BACKEND_URL}/v1/stream`;
 const TEST_TIMEOUT = 30000; // 30 segundos
 

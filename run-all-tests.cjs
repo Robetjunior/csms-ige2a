@@ -38,7 +38,7 @@ try {
 
 // Configurações globais
 const CONFIG = {
-  BACKEND_URL: process.env.BACKEND_URL || 'http://localhost:3000',
+  BACKEND_URL: process.env.BACKEND_URL || 'http://35.231.137.231:3000',
   FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:5173',
   TEST_CHARGE_BOX_ID: 'DRBAKANA-TEST-05',
   TEST_CONNECTOR_ID: 1,
