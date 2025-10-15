@@ -44,14 +44,6 @@ if (DOCS_ENABLED) {
   app.get('/openapi.yaml', (_req, res) => {
     res.type('text/yaml').sendFile(OPENAPI_FILE);
   });
-  app.use(
-    '/docs',
-    swaggerUi.serve,
-    swaggerUi.setup(undefined, {
-      swaggerOptions: { url: '/openapi.yaml' },
-      customSiteTitle: 'Orchestrator API — Docs',
-    }),
-  );
 } else {
   console.warn('[docs] desabilitado (ENABLE_DOCS=0)');
 }
@@ -72,7 +64,7 @@ app.use('/v1/stream', streamRouter);
 app.options('/v1/*', buildCors());
 // Também aplicamos CORS antes de exigir API Key, para que o navegador receba cabeçalhos CORS
 app.use('/v1', buildCors());
-app.use('/v1', requireApiKey(), buildRateLimiter());
+app.use('/v1', requireApiKey());
 
 // ---- Rotas autenticadas ----
 app.use('/v1/events', eventsRouter); // REST normal (não SSE)
