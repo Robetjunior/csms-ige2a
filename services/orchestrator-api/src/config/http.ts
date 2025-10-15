@@ -15,23 +15,33 @@ export function buildCors() {
     // CorsRequest não tem req.header(); usar req.headers.origin
     const origin = (req.headers?.origin || req.headers?.Origin) as string | undefined;
 
+    // Para SSE (/v1/stream), ser mais permissivo
+    const isSSE = req.url?.includes('/v1/stream');
+    
     // Sem origem (ex.: curl/supertest) => permitir
     if (!allowed || !origin) {
       return cb(null, {
         origin: true,
         credentials: true,
         methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-        allowedHeaders: ['Content-Type','X-API-Key'],
+        allowedHeaders: ['Content-Type','X-API-Key','Cache-Control','Last-Event-ID'],
+        exposedHeaders: ['Content-Type','Cache-Control','Connection'],
         optionsSuccessStatus: 204,
       });
     }
 
     const ok = allowed.includes(origin);
+    
+    // Para SSE, permitir sempre origens localhost
+    const isLocalhost = origin.includes('localhost') || origin.includes('127.0.0.1');
+    const allowOrigin = isSSE ? (ok || isLocalhost) : ok;
+    
     return cb(null, {
-      origin: ok, // true/false: se false, o CORS não será aplicado
+      origin: allowOrigin, // true/false: se false, o CORS não será aplicado
       credentials: true,
       methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-      allowedHeaders: ['Content-Type','X-API-Key'],
+      allowedHeaders: ['Content-Type','X-API-Key','Cache-Control','Last-Event-ID'],
+      exposedHeaders: ['Content-Type','Cache-Control','Connection'],
       optionsSuccessStatus: 204,
     });
   };

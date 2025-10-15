@@ -36,6 +36,7 @@ const StreamQuery = z.object({
   types:  z.string().optional(),                 // "heartbeat,status-change" ou omitido
   format: z.enum(['sse','ndjson']).optional().default('sse'),
   pingMs: z.coerce.number().int().min(5000).max(60000).optional().default(15000),
+  apiKey: z.string().optional(),                 // API key via query parameter
 });
 
 const DEFAULT_TYPES: OutEventName[] = ['heartbeat','status-change','session-start','session-end','telemetry-updated'];
@@ -82,6 +83,14 @@ streamRouter.get('/', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'invalid_query', details: parsed.error.issues });
   }
   const q = parsed.data;
+
+  // Verificar autenticação via header ou query parameter
+  const apiKey = req.headers['x-api-key'] || q.apiKey;
+  const expectedApiKey = process.env.API_KEY || 'minha_chave_super_secreta';
+  
+  if (!apiKey || apiKey !== expectedApiKey) {
+    return res.status(401).json({ error: 'unauthorized', message: 'API key required' });
+  }
   const cbids = toSet<string>(q.cbid);
   const types = toSet<OutEventName>(q.types, DEFAULT_TYPES) ?? new Set(DEFAULT_TYPES as OutEventName[]);
   const format = q.format as Format;
@@ -117,10 +126,12 @@ streamRouter.get('/', (req: Request, res: Response) => {
 
   const client: Client = { res, format, cbids, types, pingTimer };
   clients.add(client);
+  console.log(`🔗 Nova conexão SSE estabelecida. Total de clientes: ${clients.size}`);
 
   req.on('close', () => {
     clearInterval(pingTimer);
     clients.delete(client);
+    console.log(`❌ Conexão SSE fechada. Total de clientes: ${clients.size}`);
   });
 });
 
@@ -135,3 +146,76 @@ export function publish(evt: BusEvent) {
     try { writeToClient(c, name, payload); } catch {}
   }
 }
+
+// Endpoint de teste para simular eventos SSE
+streamRouter.post('/test-event', (req: Request, res: Response) => {
+  try {
+    const { type, chargeBoxId = 'test-charger' } = req.body;
+    
+    let event: BusEvent;
+    
+    switch (type) {
+      case 'heartbeat':
+        event = {
+          type: 'heartbeat',
+          chargeBoxId,
+          at: new Date().toISOString()
+        };
+        break;
+        
+      case 'status-change':
+        event = {
+          type: 'status.changed',
+          chargeBoxId,
+          connectorId: 1,
+          status: 'Available',
+          updatedAt: new Date().toISOString()
+        };
+        break;
+        
+      case 'session-start':
+        event = {
+          type: 'session.started',
+          chargeBoxId,
+          transactionId: Math.floor(Math.random() * 1000),
+          idTag: 'test-tag',
+          startedAt: new Date().toISOString()
+        };
+        break;
+        
+      case 'telemetry-updated':
+        event = {
+          type: 'telemetry.updated',
+          chargeBoxId,
+          transactionId: 123,
+          telemetry: {
+            power_kw: 7.2,
+            energy_kwh: 15.5,
+            voltage_v: 230,
+            current_a: 32,
+            soc_percent: 65,
+            duration_seconds: 1800,
+            temperature_c: 25
+          },
+          updatedAt: new Date().toISOString()
+        };
+        break;
+        
+      default:
+        return res.status(400).json({ error: 'Tipo de evento inválido' });
+    }
+    
+    publish(event);
+    console.log(`🧪 Evento de teste enviado: ${type} para ${chargeBoxId}`);
+    
+    res.json({ 
+      success: true, 
+      message: `Evento ${type} enviado para ${chargeBoxId}`,
+      clients: clients.size
+    });
+    
+  } catch (error) {
+    console.error('Erro ao enviar evento de teste:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});

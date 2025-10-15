@@ -1,0 +1,2 @@
+New-Item -ItemType File .\monitoring\prometheus\rules.yml -Force | Out-Null
+docker compose up -d prometheus

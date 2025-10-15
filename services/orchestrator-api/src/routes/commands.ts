@@ -374,4 +374,132 @@ router.get('/', async (_req: Request, res: Response) => {
   return res.json(r.data);
 });
 
+/* ===== GetConfiguration ===== */
+const GetConfigurationSchema = z.object({
+  chargeBoxId: z.string().min(1),
+  key: z.array(z.string()).optional()
+});
+
+router.post('/getConfiguration', async (req: Request, res: Response) => {
+  const parsed = GetConfigurationSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: 'invalid_payload',
+      details: parsed.error.issues.map(i => ({ path: i.path, message: i.message })),
+    });
+  }
+  const { chargeBoxId, key } = parsed.data;
+
+  // registra comando
+  const ins = await sb.from('commands').insert({
+    command_type: 'GetConfiguration',
+    charge_box_id: chargeBoxId,
+    status: 'pending',
+    requested_by: 'api',
+    payload: { key }
+  }).select('id').single();
+  if (ins.error) return res.status(500).json({ error:'insert_error', detail: ins.error.message });
+
+  const cmdId = ins.data.id;
+
+  try {
+    // Simular resposta de configuração (em um sistema real, isso viria do CSMS)
+    const mockConfiguration = {
+      configurationKey: [
+        { key: 'HeartbeatInterval', readonly: false, value: '300' },
+        { key: 'MeterValueSampleInterval', readonly: false, value: '60' },
+        { key: 'ClockAlignedDataInterval', readonly: false, value: '900' },
+        { key: 'ConnectionTimeOut', readonly: false, value: '60' },
+        { key: 'GetConfigurationMaxKeys', readonly: true, value: '50' },
+        { key: 'LocalAuthorizeOffline', readonly: false, value: 'true' },
+        { key: 'LocalPreAuthorize', readonly: false, value: 'false' }
+      ],
+      unknownKey: []
+    };
+
+    await sb.from('commands').update({
+      status: 'accepted',
+      response: mockConfiguration,
+      updated_at: new Date().toISOString()
+    }).eq('id', cmdId);
+
+    return res.status(200).json({ 
+      commandId: cmdId, 
+      status: 'accepted', 
+      response: mockConfiguration 
+    });
+  } catch (e: any) {
+    const msg = String(e?.message || '');
+    await sb.from('commands').update({
+      status: 'failed',
+      response: { error: msg },
+      updated_at: new Date().toISOString()
+    }).eq('id', cmdId);
+
+    return res.status(500).json({ error: 'get_configuration_failed', detail: msg });
+  }
+});
+
+/* ===== GetDiagnostics ===== */
+const GetDiagnosticsSchema = z.object({
+  chargeBoxId: z.string().min(1),
+  location: z.string().url(),
+  retries: z.number().int().nonnegative().optional(),
+  retryInterval: z.number().int().positive().optional(),
+  startTime: z.string().datetime().optional(),
+  stopTime: z.string().datetime().optional()
+});
+
+router.post('/getDiagnostics', async (req: Request, res: Response) => {
+  const parsed = GetDiagnosticsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: 'invalid_payload',
+      details: parsed.error.issues.map(i => ({ path: i.path, message: i.message })),
+    });
+  }
+  const { chargeBoxId, location, retries, retryInterval, startTime, stopTime } = parsed.data;
+
+  // registra comando
+  const ins = await sb.from('commands').insert({
+    command_type: 'GetDiagnostics',
+    charge_box_id: chargeBoxId,
+    status: 'pending',
+    requested_by: 'api',
+    payload: { location, retries, retryInterval, startTime, stopTime }
+  }).select('id').single();
+  if (ins.error) return res.status(500).json({ error:'insert_error', detail: ins.error.message });
+
+  const cmdId = ins.data.id;
+
+  try {
+    // Simular resposta de diagnósticos (em um sistema real, isso viria do CSMS)
+    const mockDiagnostics = {
+      fileName: `diagnostics_${chargeBoxId}_${new Date().toISOString().split('T')[0]}.log`,
+      status: 'Accepted'
+    };
+
+    await sb.from('commands').update({
+      status: 'accepted',
+      response: mockDiagnostics,
+      updated_at: new Date().toISOString()
+    }).eq('id', cmdId);
+
+    return res.status(200).json({ 
+      commandId: cmdId, 
+      status: 'accepted', 
+      response: mockDiagnostics 
+    });
+  } catch (e: any) {
+    const msg = String(e?.message || '');
+    await sb.from('commands').update({
+      status: 'failed',
+      response: { error: msg },
+      updated_at: new Date().toISOString()
+    }).eq('id', cmdId);
+
+    return res.status(500).json({ error: 'get_diagnostics_failed', detail: msg });
+  }
+});
+
 export default router;

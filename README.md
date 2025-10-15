@@ -90,6 +90,18 @@ docker compose down -v
 | **Prometheus**   | http://localhost:9090     | Console/queries                  |
 | **cAdvisor**     | http://localhost:18081    | Métricas de containers           |
 
+### Frontend (.env recomendado)
+- Para apps Vite:
+  - `VITE_API_BASE_URL=http://localhost:3000`
+  - `VITE_API_KEY=minha_chave_super_secreta`
+  - No código, leia via `import.meta.env.VITE_API_BASE_URL` e `import.meta.env.VITE_API_KEY`.
+- Para apps Expo/React Native:
+  - `EXPO_PUBLIC_API_BASE_URL=http://localhost:3000`
+  - `EXPO_PUBLIC_API_KEY=minha_chave_super_secreta`
+  - No código, leia via `process.env.EXPO_PUBLIC_API_BASE_URL` e `process.env.EXPO_PUBLIC_API_KEY`.
+
+Evite hardcode de URL/API Key no código-fonte. Garanta que o backend aceite a origem do seu frontend adicionando-a em `services/orchestrator-api/.env.local` na variável `DASHBOARD_ORIGINS` (múltiplas origens separadas por vírgula), por exemplo: `http://localhost:5173,http://localhost:8086`.
+
 ### Health & Métricas
 
 ```bash

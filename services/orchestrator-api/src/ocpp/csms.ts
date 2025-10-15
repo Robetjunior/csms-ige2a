@@ -46,16 +46,25 @@ export class OcppCsms extends EventEmitter {
     });
 
     server.on('upgrade', (req, socket, head) => {
+      console.log(`[OCPP DEBUG] Upgrade request: ${req.url}`);
       const url = new URL(req.url || '', `http://${req.headers.host}`);
-      if (!url.pathname.startsWith(`${OCPP_PATH_PREFIX}/`)) return;
-      this.wss!.handleUpgrade(req, socket, head, (ws) =>
-        this.wss!.emit('connection', ws, req)
-      );
+      console.log(`[OCPP DEBUG] Parsed URL pathname: ${url.pathname}`);
+      console.log(`[OCPP DEBUG] Expected prefix: ${OCPP_PATH_PREFIX}/`);
+      if (!url.pathname.startsWith(`${OCPP_PATH_PREFIX}/`)) {
+        console.log(`[OCPP DEBUG] Path doesn't match, ignoring`);
+        return;
+      }
+      console.log(`[OCPP DEBUG] Path matches, handling upgrade`);
+      this.wss!.handleUpgrade(req, socket, head, (ws) => {
+        console.log(`[OCPP DEBUG] WebSocket upgraded, emitting connection`);
+        this.wss!.emit('connection', ws, req);
+      });
     });
 
-    this.wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) =>
-      this.handleConnection(ws, req)
-    );
+    this.wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
+      console.log(`[OCPP DEBUG] Connection event received`);
+      this.handleConnection(ws, req);
+    });
 
     console.log(`[OCPP] ready at ws://<host>:<port>${OCPP_PATH_PREFIX}/<CPID> (${OCPP_SUBPROTOCOL})`);
   }
@@ -127,10 +136,14 @@ export class OcppCsms extends EventEmitter {
 
   /* ======================= Internals ======================== */
   private handleConnection(ws: WebSocket, req: http.IncomingMessage) {
+    console.log(`[OCPP DEBUG] handleConnection called with URL: ${req.url}`);
     const url = new URL(req.url || '', `http://${req.headers.host}`);
+    console.log(`[OCPP DEBUG] URL pathname: ${url.pathname}`);
     const chargeBoxId = decodeURIComponent(url.pathname.split('/').pop() || 'unknown');
+    console.log(`[OCPP DEBUG] Extracted chargeBoxId: ${chargeBoxId}`);
 
     this.registry.setPeer(chargeBoxId, ws);
+    console.log(`[OCPP DEBUG] Registry setPeer called for: ${chargeBoxId}`);
     console.log(`[OCPP] CP connected: ${chargeBoxId}`);
 
     const iv = setInterval(() => { if (ws.readyState === ws.OPEN) ws.ping(); }, OCPP_PING_MS);

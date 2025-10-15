@@ -1,39 +1,29 @@
-﻿services:
+services:
   orchestrator:
     image: node:20-alpine
     container_name: csms_orchestrator
     working_dir: /app
-
     volumes:
       - ./services/orchestrator-api:/app
       - /app/node_modules
-      # (remova se nÃ£o usa CA corporativo)
       # - ./certs/corp-ca.crt:/usr/local/share/ca-certificates/corp-ca.crt:ro
-
     dns:
       - 1.1.1.1
       - 8.8.8.8
 
-    # carrega variÃ¡veis do serviÃ§o (inclui SUPABASE_URL/KEY e POSTGRES_URI)
     env_file:
-      - ./services/orchestrator-api/.env
-
+      - ./services/orchestrator-api/.env.local
     environment:
       NODE_ENV: development
       TZ: UTC
       PORT: "3000"
       PG_POOL_MAX: "10"
-      # Descomente somente se precisar desligar verificaÃ§Ã£o de certificado (nÃ£o recomendado)
-
-      # Engine OCPP (placeholder)
       OCPP_ENGINE_KIND: mock
       OCPP_ENGINE_URL: ""
-
-      # Dev
       CHOKIDAR_USEPOLLING: "true"
+      DASHBOARD_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173,https://localhost:5173,http://localhost:8084,http://127.0.0.1:8084,https://localhost:8084,http://localhost:8086,http://localhost:8087"
       ORCH_API_KEY: ${ORCH_API_KEY:-minha_chave_super_secreta}
       NODE_OPTIONS: "--dns-result-order=ipv4first"
-
     command: >
       sh -lc "apk add --no-cache ca-certificates &&
               update-ca-certificates &&
@@ -41,17 +31,14 @@
               corepack prepare pnpm@10.14.0 --activate &&
               pnpm install &&
               pnpm dev"
-
     ports:
       - "3000:3000"
-
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/readiness || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/metrics > /dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 20s
-
     restart: unless-stopped
     mem_limit: 256m
     cpus: 1.0
@@ -85,10 +72,18 @@
     ports:
       - "9090:9090"
     volumes:
-      - ./monitoring/prometheus:/etc/prometheus:ro
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
       - ./.data/prometheus:/prometheus
     depends_on:
       - cadvisor
+      - orchestrator
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
     restart: unless-stopped
     mem_limit: 512m
     cpus: 0.75
@@ -96,6 +91,7 @@
   grafana:
     image: grafana/grafana:11.1.4
     container_name: csms_grafana
+    user: "0"  # evita problemas de permissão no Windows/WSL2
     ports:
       - "3001:3000"
     environment:
@@ -103,13 +99,22 @@
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s:%(http_port)s/"
+      GF_SERVER_HTTP_ADDR: 0.0.0.0
+      GF_SERVER_HTTP_PORT: 3000
+      GF_PATHS_DATA: /var/lib/grafana
       TZ: UTC
     volumes:
       - ./.data/grafana:/var/lib/grafana
+      # habilite se você criar os arquivos de provisioning (seção 3)
+      - ./services/grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
     restart: unless-stopped
     mem_limit: 256m
     cpus: 0.5
-
-

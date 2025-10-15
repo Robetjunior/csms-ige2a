@@ -150,6 +150,46 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /v1/sessions/active/:chargeBoxId
+ * Busca a sessão ativa de um carregador específico
+ */
+router.get('/active/:chargeBoxId', async (req: Request, res: Response) => {
+  try {
+    const chargeBoxId = String(req.params.chargeBoxId || '').trim();
+    if (!chargeBoxId) {
+      return res.status(400).json({ error: 'invalid_charge_box_id' });
+    }
+
+    const r = await sb
+      .from('sessions')
+      .select('transaction_id, charge_box_id, id_tag, started_at, stopped_at, stop_reason')
+      .eq('charge_box_id', chargeBoxId)
+      .is('stopped_at', null)
+      .order('id', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (r.error) return res.status(500).json({ error: 'query_error', detail: r.error.message });
+    if (!r.data) return res.json({ session: null });
+
+    const s: any = r.data;
+    const duration_seconds = Math.floor((new Date().getTime() - new Date(s.started_at).getTime())/1000);
+
+    return res.json({ 
+      session: {
+        ...s, 
+        status: 'active', 
+        duration_seconds,
+        isActive: true
+      }
+    });
+  } catch (err: any) {
+    console.error('[GET /v1/sessions/active/:chargeBoxId] error:', err);
+    return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+/**
  * GET /v1/sessions/:transactionId
  */
 router.get('/:transactionId', async (req: Request, res: Response) => {
