@@ -12,17 +12,21 @@ function parseKeys(raw: string | undefined): Set<string> {
 
 /**
  * Exige header X-API-Key em todas as rotas onde for aplicado.
- * - Suporta múltiplas chaves via ORCH_API_KEY="k1,k2,k3"
+ * - Suporta múltiplas chaves via ORCH_API_KEY="k1,k2,k3" e API_KEYS
  * - Ignora pré-flight CORS (OPTIONS)
  */
 export function requireApiKey() {
-  const keys = parseKeys(process.env.ORCH_API_KEY);
+  const keys = new Set<string>();
+  // Suporta ambas variáveis por compatibilidade
+  const orch = parseKeys(process.env.ORCH_API_KEY);
+  const list = parseKeys(process.env.API_KEYS);
+  orch.forEach(k => keys.add(k));
+  list.forEach(k => keys.add(k));
 
   if (keys.size === 0) {
-    // Bloqueia tudo por segurança se ninguém configurou ORCH_API_KEY.
-    // Se quiser liberar em dev, troque por um console.warn e next().
+    // Bloqueia tudo por segurança se ninguém configurou ORCH_API_KEY/API_KEYS.
     // eslint-disable-next-line no-console
-    console.error('[auth] ORCH_API_KEY não configurada. Defina pelo menos 1 chave (pode ser múltiplas, separadas por vírgula).');
+    console.error('[auth] Nenhuma API key configurada. Defina ORCH_API_KEY ou API_KEYS com pelo menos 1 chave.');
   }
 
   return (req: Request, res: Response, next: NextFunction) => {

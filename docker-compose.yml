@@ -12,7 +12,7 @@ services:
       - 8.8.8.8
 
     env_file:
-      - ./services/orchestrator-api/.env.local
+      - ./.env
     environment:
       NODE_ENV: development
       TZ: UTC

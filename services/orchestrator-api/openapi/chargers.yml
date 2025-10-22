@@ -1,0 +1,67 @@
+paths:
+  /v1/chargers/{chargeBoxId}/location:
+    patch:
+      summary: Atualiza localização de um Charge Point
+      description: Atualiza latitude, longitude e endereço do carregador via RPC `set_cp_location`.
+      security:
+        - X-API-Key: []
+      parameters:
+        - in: path
+          name: chargeBoxId
+          required: true
+          schema:
+            type: string
+          description: Identificador do charge box
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                latitude:
+                  type: number
+                  minimum: -90
+                  maximum: 90
+                longitude:
+                  type: number
+                  minimum: -180
+                  maximum: 180
+                address:
+                  type: string
+              required: [latitude, longitude]
+            example:
+              latitude: -23.561
+              longitude: -46.651
+              address: Av. Paulista, 1200 - SP
+      responses:
+        '200':
+          description: Ok
+          content:
+            application/json:
+              example:
+                ok: true
+        '400':
+          description: Parâmetros inválidos
+          content:
+            application/json:
+              example:
+                error: invalid_parameters
+        '401':
+          description: Não autorizado (API Key ausente ou inválida)
+          content:
+            application/json:
+              example:
+                error: unauthorized
+        '500':
+          description: Erro interno ao executar RPC
+          content:
+            application/json:
+              example:
+                error: internal_error
+components:
+  securitySchemes:
+    X-API-Key:
+      type: apiKey
+      in: header
+      name: X-API-Key

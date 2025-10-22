@@ -18,6 +18,7 @@ import actionsRouter from './routes/actions';
 import ocppDebug from './routes/ocpp-debug';
 import ocppEventsRouter from './routes/ocpp-events';
 import { streamRouter } from './routes/stream';
+import chargePointsRouter from './routes/charge-points';
 
 import { buildCors, buildRateLimiter } from './config/http';
 import { requireApiKey } from './middleware/apiKey';
@@ -78,5 +79,5 @@ app.use('/v1/metrics-advanced', metricsAdvancedRouter);
 app.use('/v1/tariffs', tariffsRouter);
 app.use('/v1/billing', billingRouter);
 app.use('/v1/telemetry', telemetryStatusRouter);
-
+app.use('/v1/charge-points', chargePointsRouter);
 export default app;
