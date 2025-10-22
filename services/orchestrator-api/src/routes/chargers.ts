@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { sb } from '../../supabase';
 import { csms } from '../ocpp/csms';
-import { requireApiKey } from '@src/middleware/apiKey';
+import { requireApiKey } from '../middleware/apiKey';
 
 const router = Router();
 router.use(requireApiKey);

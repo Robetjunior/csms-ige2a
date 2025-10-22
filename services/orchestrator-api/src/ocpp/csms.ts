@@ -41,17 +41,22 @@ export class OcppCsms extends EventEmitter {
   start(server: http.Server) {
     this.wss = new WebSocketServer({
       noServer: true,
-      handleProtocols: (protocols: Set<string>) =>
-        protocols.has(OCPP_SUBPROTOCOL) ? OCPP_SUBPROTOCOL : false,
+      handleProtocols: (protocols: Set<string>) => {
+        const accepted = protocols.has(OCPP_SUBPROTOCOL) ? OCPP_SUBPROTOCOL : false;
+        console.log(`[OCPP DEBUG] handleProtocols requested=${Array.from(protocols).join(', ') || '(none)'} accepted=${accepted || '(none)'}`);
+        return accepted;
+      },
     });
 
     server.on('upgrade', (req, socket, head) => {
       console.log(`[OCPP DEBUG] Upgrade request: ${req.url}`);
+      console.log(`[OCPP DEBUG] Sec-WebSocket-Protocol: ${req.headers['sec-websocket-protocol'] ?? '(none)'}`);
       const url = new URL(req.url || '', `http://${req.headers.host}`);
       console.log(`[OCPP DEBUG] Parsed URL pathname: ${url.pathname}`);
       console.log(`[OCPP DEBUG] Expected prefix: ${OCPP_PATH_PREFIX}/`);
       if (!url.pathname.startsWith(`${OCPP_PATH_PREFIX}/`)) {
-        console.log(`[OCPP DEBUG] Path doesn't match, ignoring`);
+        console.log(`[OCPP DEBUG] Path doesn't match, rejecting upgrade and destroying socket`);
+        try { socket.destroy(); } catch {}
         return;
       }
       console.log(`[OCPP DEBUG] Path matches, handling upgrade`);
@@ -62,7 +67,7 @@ export class OcppCsms extends EventEmitter {
     });
 
     this.wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
-      console.log(`[OCPP DEBUG] Connection event received`);
+      console.log(`[OCPP DEBUG] Connection event received (protocol=${ws.protocol || '(none)'})`);
       this.handleConnection(ws, req);
     });
 
