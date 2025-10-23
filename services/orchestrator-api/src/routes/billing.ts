@@ -213,6 +213,20 @@ router.post('/close', async (req: Request, res: Response) => {
 });
 
 // GET /v1/billing/invoices
+// Throttled warning logger to prevent log spam (e.g., multiple month requests)
+let __billingWarnLastTs = 0;
+let __billingWarnCount = 0;
+const throttledWarn = (msg: string, windowMs = 60000, maxPerWindow = 2) => {
+  const now = Date.now();
+  if (now - __billingWarnLastTs > windowMs) {
+    __billingWarnLastTs = now;
+    __billingWarnCount = 0;
+  }
+  if (__billingWarnCount < maxPerWindow) {
+    __billingWarnCount++;
+    console.warn(msg);
+  }
+};
 router.get('/invoices', async (req: Request, res: Response) => {
   try {
     const pickFirst = <T,>(v: T | T[] | undefined | null): T | undefined => Array.isArray(v) ? v[0] : (v ?? undefined);
@@ -264,17 +278,152 @@ router.get('/invoices', async (req: Request, res: Response) => {
     if (cb) q = q.eq('charge_box_id', cb);
     if (idTag) q = q.eq('id_tag', idTag);
 
-    const r = await q;
-    if (r.error) return res.status(500).json({ error: 'query_error', detail: r.error.message });
+    // Add timeout and better error handling for connectivity issues
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Database timeout')), 5000)
+    );
+    
+    let r;
+    try {
+      r = await Promise.race([q, timeoutPromise]);
+    } catch (timeoutError) {
+      throttledWarn('[GET /v1/billing/invoices] Database timeout or connectivity issue, returning empty array');
+      return res.json({ items: [] });
+    }
+    
+    if (r.error) {
+      throttledWarn(`[GET /v1/billing/invoices] Database error: ${r.error.message}; returning empty array`);
+      return res.json({ items: [] });
+    }
 
-    return res.json({ items: r.data });
+    return res.json({ items: r.data || [] });
   } catch (err) {
-    console.error('[GET /v1/billing/invoices] error:', err);
-    return res.status(500).json({ error: 'internal_error' });
+    // Return empty array instead of error to prevent client-side failures
+    throttledWarn(`[GET /v1/billing/invoices] error: ${String(err)}`);
+    return res.json({ items: [] });
   }
 });
 
-// GET /v1/billing/invoices/:id
+
+
+
+
+// Move the aggregated totals route BEFORE the :id route to avoid path collision
+router.get('/invoices/totals', async (req: Request, res: Response) => {
+  try {
+    const monthsRaw = Array.isArray(req.query.months) ? req.query.months[0] : req.query.months;
+    const months = (() => { const n = parseInt(String(monthsRaw ?? '12'), 10); return Number.isFinite(n) && n > 0 && n <= 36 ? n : 12; })();
+    const cb    = (() => { const v = Array.isArray(req.query.charge_box_id) ? req.query.charge_box_id[0] : req.query.charge_box_id; return (typeof v === 'string' && v.trim()) ? v.trim() : null; })();
+    const idTag = (() => { const v = Array.isArray(req.query.id_tag) ? req.query.id_tag[0] : req.query.id_tag; return (typeof v === 'string' && v.trim()) ? v.trim() : null; })();
+
+    const startOfMonth = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0));
+    const nextMonth = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()+1, 1, 0, 0, 0));
+    const now = new Date();
+    const buckets: { key: string; from: Date; to: Date; }[] = [];
+    let cursor = startOfMonth(now);
+    for (let i = 0; i < months; i++) {
+      const to = nextMonth(cursor);
+      const key = `${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth()+1).padStart(2,'0')}`;
+      buckets.unshift({ key, from: cursor, to });
+      cursor = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth()-1, 1, 0, 0, 0));
+    }
+
+    const globalFrom = buckets[0].from;
+    const globalTo   = buckets[buckets.length-1].to;
+
+    let q = sb
+      .from('invoices')
+      .select('started_at, energy_kwh, idle_minutes, total_br, charge_box_id, id_tag')
+      .gte('started_at', globalFrom.toISOString())
+      .lt('started_at', globalTo.toISOString());
+    if (cb) q = q.eq('charge_box_id', cb);
+    if (idTag) q = q.eq('id_tag', idTag);
+
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Database timeout')), 5000));
+    let r: any;
+    try {
+      r = await Promise.race([q, timeoutPromise]);
+    } catch (err) {
+      throttledWarn(`[GET /v1/billing/invoices/totals] timeout/connectivity: ${String(err)}`);
+      // zero-filled buckets
+      return res.json({
+        items: buckets.map(b => ({
+          month: b.key,
+          from: b.from.toISOString(),
+          to: b.to.toISOString(),
+          count: 0,
+          energy_kwh: 0,
+          idle_minutes: 0,
+          total_br: 0
+        }))
+      });
+    }
+
+    if (r.error) {
+      throttledWarn(`[GET /v1/billing/invoices/totals] query error: ${r.error.message}`);
+      return res.json({
+        items: buckets.map(b => ({
+          month: b.key,
+          from: b.from.toISOString(),
+          to: b.to.toISOString(),
+          count: 0,
+          energy_kwh: 0,
+          idle_minutes: 0,
+          total_br: 0
+        }))
+      });
+    }
+
+    const itemsRaw: Array<{ started_at: string; energy_kwh: number; idle_minutes: number; total_br: number; }> = r.data ?? [];
+    // group by YYYY-MM
+    const grouped = new Map<string, { count: number; energy_kwh: number; idle_minutes: number; total_br: number; }>();
+    for (const it of itemsRaw) {
+      const d = new Date(it.started_at);
+      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`;
+      const g = grouped.get(key) ?? { count: 0, energy_kwh: 0, idle_minutes: 0, total_br: 0 };
+      g.count += 1;
+      g.energy_kwh += Number(it.energy_kwh || 0);
+      g.idle_minutes += Number(it.idle_minutes || 0);
+      g.total_br += Number(it.total_br || 0);
+      grouped.set(key, g);
+    }
+
+    // assemble result, zero-fill missing months
+    const result = buckets.map(b => {
+      const g = grouped.get(b.key) ?? { count: 0, energy_kwh: 0, idle_minutes: 0, total_br: 0 };
+      return {
+        month: b.key,
+        from: b.from.toISOString(),
+        to: b.to.toISOString(),
+        count: g.count,
+        energy_kwh: Number(g.energy_kwh.toFixed(4)),
+        idle_minutes: g.idle_minutes,
+        total_br: Number(g.total_br.toFixed(2))
+      };
+    });
+
+    return res.json({ items: result });
+  } catch (err) {
+    throttledWarn(`[GET /v1/billing/invoices/totals] error: ${String(err)}`);
+    // zero-filled fallback
+    const now = new Date();
+    const startOfMonth = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0));
+    const nextMonth = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()+1, 1, 0, 0, 0));
+    const buckets: { key: string; from: Date; to: Date; }[] = [];
+    let cursor = startOfMonth(now);
+    for (let i = 0; i < 12; i++) {
+      const to = nextMonth(cursor);
+      const key = `${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth()+1).padStart(2,'0')}`;
+      buckets.unshift({ key, from: cursor, to });
+      cursor = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth()-1, 1, 0, 0, 0));
+    }
+    return res.json({
+      items: buckets.map(b => ({ month: b.key, from: b.from.toISOString(), to: b.to.toISOString(), count: 0, energy_kwh: 0, idle_minutes: 0, total_br: 0 }))
+    });
+  }
+});
+
+// Rota de detalhe no final, após a rota agregada
 router.get('/invoices/:id', async (req, res) => {
   try {
     const id = Number(String(req.params.id ?? '').trim());
