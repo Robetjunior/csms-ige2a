@@ -1,10 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { sb } from '../../supabase';
 import { csms } from '../ocpp/csms';
-import { requireApiKey } from '../middleware/apiKey';
 
 const router = Router();
-router.use(requireApiKey);
+// Removido middleware redundante requireApiKey; já aplicado globalmente em /v1
 
 /* helpers */
 const num = (v:any, d?:number)=> (v==null||v==='') ? (d??null) : (Number.isFinite(Number(v))? Number(v): null);
@@ -14,25 +13,56 @@ const timed = (label:string)=>{ const t0=Date.now(); return { t0, done:(extra?:a
 const ok = (res:Response, data:any)=> res.json(data);
 const err = (res:Response, code:number, error='internal_error', detail?:any)=> res.status(code).json({ error, detail });
 
+// Add a short timeout for Supabase queries to avoid hanging responses
+const qTimeoutMs = Number(process.env.SUPABASE_QUERY_TIMEOUT_MS ?? '1500');
+async function withTimeout<T>(p: Promise<T>, ms = qTimeoutMs): Promise<T | null> {
+  return await Promise.race([
+    p,
+    new Promise<T | null>((resolve) => setTimeout(() => resolve(null), ms)),
+  ]);
+}
+
 /* GET /v1/chargers/online */
 router.get('/online', async (req:Request, res:Response) => {
   const t = timed('chargers/online');
   const sinceMinutes = num(req.query.sinceMinutes, 7) ?? 7;
   const limit = num(req.query.limit, 200) ?? 200;
   try {
+    // Optional fast-path: skip DB if explicitly disabled or unreachable
+    const disableDb = (process.env.DISABLE_DB_ONLINE ?? '0') === '1';
+    if (disableDb) {
+      const ws = new Set(csms.listOnline());
+      const ids = Array.from(ws).slice(0, limit);
+      const items = ids.map(id => {
+        const snap = csms.getStatusSnapshot(id);
+        return {
+          chargeBoxId: id,
+          wsOnline: true,
+          onlineRecently: snap.lastHeartbeat != null,
+          lastHeartbeatAt: snap.lastHeartbeat ?? null,
+          lastStatus: snap.connectors?.[0]?.status ?? 'Unknown',
+          lastStatusAt: null,
+          connectors: snap.connectors ?? [],
+          lastTransactionId: snap.lastTransactionId ?? null,
+        };
+      });
+      t.done({ count: items.length, fastPath: true });
+      return ok(res, { items, count: items.length });
+    }
+
     const cutoff = new Date(Date.now() - sinceMinutes*60_000).toISOString();
-    const v = await sb.from('last_heartbeat_v').select('charge_box_id,last_heartbeat_at').gte('last_heartbeat_at', cutoff);
+    const v = await withTimeout(sb.from('last_heartbeat_v').select('charge_box_id,last_heartbeat_at').gte('last_heartbeat_at', cutoff));
     const hb = new Map<string,string>();
-    if (!v.error && v.data) for (const r of v.data as any[]) hb.set(r.charge_box_id, r.last_heartbeat_at);
+    if (v && !v.error && v.data) for (const r of v.data as any[]) hb.set(r.charge_box_id, r.last_heartbeat_at);
     else {
-      const e = await sb.from('ocpp_events').select('charge_box_id,created_at').eq('event_type','Heartbeat').gte('created_at', cutoff).limit(5000);
-      if (!e.error && e.data) for (const r of e.data as any[]) hb.set(r.charge_box_id, r.created_at);
+      const e = await withTimeout(sb.from('ocpp_events').select('charge_box_id,created_at').eq('event_type','Heartbeat').gte('created_at', cutoff).limit(5000));
+      if (e && !e.error && e.data) for (const r of e.data as any[]) hb.set(r.charge_box_id, r.created_at);
     }
     const ws = new Set(csms.listOnline());
     const ids = Array.from(new Set([...ws, ...hb.keys()])).slice(0, limit);
-    const st = await sb.from('last_status_v').select('charge_box_id,status,last_status_at').in('charge_box_id', ids);
+    const st = ids.length ? await withTimeout(sb.from('last_status_v').select('charge_box_id,status,last_status_at').in('charge_box_id', ids)) : null;
     const status = new Map<string,{s:string,t:string|null}>();
-    if (!st.error && st.data) for (const r of st.data as any[]) status.set(r.charge_box_id, { s:r.status, t:r.last_status_at });
+    if (st && !st.error && st.data) for (const r of st.data as any[]) status.set(r.charge_box_id, { s:r.status, t:r.last_status_at });
 
     const items = ids.map(id=>{
       const snap = csms.getStatusSnapshot(id);
@@ -61,15 +91,17 @@ router.get('/:chargeBoxId', async (req:Request, res:Response)=>{
   const id = String(req.params.chargeBoxId||'').trim();
   if (!id) return err(res,400,'invalid_charge_box_id');
   try {
-    const cb = await sb.from('charge_boxes_v').select('charge_box_id,site,lat,lon,address').eq('charge_box_id', id).maybeSingle();
+    const cb = await withTimeout(sb.from('charge_boxes_v').select('charge_box_id,site,lat,lon,address').eq('charge_box_id', id).maybeSingle());
     const snap = csms.getStatusSnapshot(id);
     t.done();
+    const latVal = (cb?.data?.lat!=null && Number.isFinite(Number(cb.data.lat))) ? Number(cb.data.lat) : null;
+    const lonVal = (cb?.data?.lon!=null && Number.isFinite(Number(cb.data.lon))) ? Number(cb.data.lon) : null;
     return ok(res, {
       chargeBoxId:id,
-      site: cb.data?.site ?? null,
-      lat: cb.data?.lat ?? null,
-      lon: cb.data?.lon ?? null,
-      address: cb.data?.address ?? null,
+      site: cb?.data?.site ?? null,
+      lat: latVal,
+      lon: lonVal,
+      address: cb?.data?.address ?? null,
       wsOnline: snap.online,
       lastHeartbeatAt: snap.lastHeartbeat ?? null,
       lastStatus: snap.connectors?.[0]?.status ?? 'Unknown',
@@ -93,18 +125,23 @@ router.get('/', async (req:Request, res:Response)=>{
     const minLat=(lat as number)-latDeg, maxLat=(lat as number)+latDeg;
     const minLon=(lon as number)-lonDeg, maxLon=(lon as number)+lonDeg;
 
-    const q = await sb.from('charge_boxes_v')
+    // Seleciona lat/lon e filtra por latitude no banco; longitude é filtrada no Node.
+    const q = await withTimeout(sb.from('charge_boxes_v')
       .select('charge_box_id,site,lat,lon')
-      .gte('lat', minLat).lte('lat', maxLat)
-      .gte('lon', minLon).lte('lon', maxLon);
+      .gte('lat', minLat).lte('lat', maxLat));
 
-    const base = (q.data||[])
-      .filter((r:any)=> r.lat!=null && r.lon!=null)
-      .map((r:any)=>({
-        chargeBoxId: r.charge_box_id,
-        site: r.site ?? null,
-        coords: { lat:Number(r.lat), lon:Number(r.lon) },
-        distanceKm: haversineKm(lat as number, lon as number, Number(r.lat), Number(r.lon)),
+    const base = (q?.data||[])
+      .map((r:any)=>{
+        const latNum = (r.lat!=null && Number.isFinite(Number(r.lat))) ? Number(r.lat) : null;
+        const lonNum = (r.lon!=null && Number.isFinite(Number(r.lon))) ? Number(r.lon) : null;
+        return { row:r, latNum, lonNum };
+      })
+      .filter(({latNum, lonNum})=> latNum!=null && lonNum!=null && lonNum>=minLon && lonNum<=maxLon)
+      .map(({row, latNum, lonNum})=>({
+        chargeBoxId: row.charge_box_id,
+        site: row.site ?? null,
+        coords: { lat: latNum as number, lon: lonNum as number },
+        distanceKm: haversineKm(lat as number, lon as number, latNum as number, lonNum as number),
       }))
       .sort((a,b)=>a.distanceKm-b.distanceKm)
       .slice(0, limit)
@@ -135,8 +172,8 @@ router.patch('/:chargeBoxId/location', async (req:Request, res:Response)=>{
     const { latitude, longitude, address } = (req.body||{}) as {latitude:number;longitude:number;address?:string|null};
     const lat = Number(latitude), lon = Number(longitude);
     if (!isValidLatLon(lat, lon)) return err(res,400,'invalid_parameters');
-    const { error } = await sb.rpc('set_cp_location', { p_charge_box_id:String(chargeBoxId), p_lat:lat, p_lon:lon, p_address: address ?? null });
-    if (error) { console.error('[rpc set_cp_location]', error.message||error); return err(res,500); }
+    const rpc = await withTimeout(sb.rpc('set_cp_location', { p_charge_box_id:String(chargeBoxId), p_lat:lat, p_lon:lon, p_address: address ?? null }));
+    if (!rpc || rpc.error) { console.error('[rpc set_cp_location]', rpc?.error?.message||rpc?.error||'timeout'); return err(res,500); }
     t.done(); return ok(res, { ok:true });
   } catch(e:any){ console.error('[patch location]',e?.message||e); return err(res,500); }
 });
