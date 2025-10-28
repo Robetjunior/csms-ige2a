@@ -216,7 +216,12 @@ router.post('/close', async (req: Request, res: Response) => {
 // Throttled warning logger to prevent log spam (e.g., multiple month requests)
 let __billingWarnLastTs = 0;
 let __billingWarnCount = 0;
-const throttledWarn = (msg: string, windowMs = 60000, maxPerWindow = 2) => {
+// Defaults controlled via env: BILLING_WARN_WINDOW_MS (ms), BILLING_WARN_MAX_PER_WINDOW (count)
+const throttledWarn = (
+  msg: string,
+  windowMs = Number(process.env.BILLING_WARN_WINDOW_MS ?? '60000'),
+  maxPerWindow = Number(process.env.BILLING_WARN_MAX_PER_WINDOW ?? '1')
+) => {
   const now = Date.now();
   if (now - __billingWarnLastTs > windowMs) {
     __billingWarnLastTs = now;

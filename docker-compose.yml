@@ -21,8 +21,9 @@ services:
       OCPP_ENGINE_KIND: mock
       OCPP_ENGINE_URL: ""
       CHOKIDAR_USEPOLLING: "true"
-      DASHBOARD_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173,https://localhost:5173,http://localhost:8084,http://127.0.0.1:8084,https://localhost:8084,http://localhost:8086,http://localhost:8087"
+      DASHBOARD_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173,https://localhost:5173,http://localhost:8084,http://127.0.0.1:8084,https://localhost:8084,http://localhost:8086,http://localhost:8087,http://localhost:8081,http://127.0.0.1:8081"
       ORCH_API_KEY: ${ORCH_API_KEY:-minha_chave_super_secreta}
+      DISABLE_DB_ONLINE: "1"
       NODE_OPTIONS: "--dns-result-order=ipv4first"
     command: >
       sh -lc "apk add --no-cache ca-certificates &&

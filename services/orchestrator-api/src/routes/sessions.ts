@@ -6,11 +6,15 @@ const router = Router();
 
 const TxParam = z.object({ transactionId: z.coerce.number().int().positive() });
 
-function extractMeterAndSocFromMeterValuesPayload(p: any): { wh?: number, soc?: number } {
+function extractTelemetryFromMeterValuesPayload(p: any): { wh?: number; soc?: number; power_kw?: number; voltage_v?: number; current_a?: number; temperature_c?: number } {
   try {
     const arr = p?.meterValue || p?.meterValues || [];
-    let wh: number|undefined;
-    let soc: number|undefined;
+    let wh: number | undefined;
+    let soc: number | undefined;
+    let power_kw: number | undefined;
+    let voltage_v: number | undefined;
+    let current_a: number | undefined;
+    let temperature_c: number | undefined;
 
     for (const mv of arr) {
       const samples = mv?.sampledValue || [];
@@ -20,19 +24,23 @@ function extractMeterAndSocFromMeterValuesPayload(p: any): { wh?: number, soc?: 
         const val = Number(valStr);
         if (!Number.isFinite(val)) continue;
 
-        // Energia acumulada (Wh) costuma vir como "Energy.Active.Import.Register"
-        if (!meas || /Energy\.Active\.Import\.Register/i.test(meas)) {
-          wh = val; // Wh acumulado
-        }
-        // SoC em %
-        if (/^SoC$/i.test(meas)) {
-          soc = val;
-        }
+        // Energia acumulada (Wh) geralmente: Energy.Active.Import.Register
+        if (!meas || /Energy\.Active\.Import\.Register/i.test(meas)) wh = val;
+        // Potência ativa de importação (geralmente em W). Converte para kW se necessário.
+        if (/Power\.Active\.Import/i.test(meas)) power_kw = val >= 100 ? Number((val / 1000).toFixed(3)) : Number(val.toFixed(3));
+        // Tensão (V)
+        if (/Voltage/i.test(meas)) voltage_v = Number(val.toFixed(2));
+        // Corrente (A)
+        if (/Current\.(Import|Export)/i.test(meas) || /^Current$/i.test(meas)) current_a = Number(val.toFixed(2));
+        // Temperatura (°C)
+        if (/Temperature/i.test(meas)) temperature_c = Number(val.toFixed(1));
+        // Estado de carga (%)
+        if (/^SoC$/i.test(meas)) soc = Math.round(val);
       }
     }
-    return { wh, soc };
+    return { wh, soc, power_kw, voltage_v, current_a, temperature_c };
   } catch {
-    return {};
+    return {} as any;
   }
 }
 
@@ -84,11 +92,19 @@ router.get('/:transactionId/progress', async (req: Request, res: Response) => {
 
     let meterLatestWh = meterStartWh;
     let soc_percent_at: number | undefined;
+    let power_kw: number | undefined;
+    let voltage_v: number | undefined;
+    let current_a: number | undefined;
+    let temperature_c: number | undefined;
 
     if (!lastMv.error && lastMv.data) {
-      const { wh, soc } = extractMeterAndSocFromMeterValuesPayload((lastMv.data as any).payload);
+      const { wh, soc, power_kw: pk, voltage_v: vv, current_a: ca, temperature_c: tc } = extractTelemetryFromMeterValuesPayload((lastMv.data as any).payload);
       if (typeof wh === 'number' && Number.isFinite(wh)) meterLatestWh = wh;
       if (typeof soc === 'number' && Number.isFinite(soc)) soc_percent_at = soc;
+      power_kw = pk;
+      voltage_v = vv;
+      current_a = ca;
+      temperature_c = tc;
     }
 
     const kwh = Math.max(0, (meterLatestWh - meterStartWh) / 1000);
@@ -96,7 +112,12 @@ router.get('/:transactionId/progress', async (req: Request, res: Response) => {
     return res.json({
       kwh: Number(kwh.toFixed(3)),
       duration_seconds,
-      ...(soc_percent_at != null ? { soc_percent_at: Math.round(soc_percent_at) } : {})
+      started_at: startedAt.toISOString(),
+      ...(soc_percent_at != null ? { soc_percent_at: Math.round(soc_percent_at) } : {}),
+      ...(power_kw != null ? { power_kw } : {}),
+      ...(voltage_v != null ? { voltage_v } : {}),
+      ...(current_a != null ? { current_a } : {}),
+      ...(temperature_c != null ? { temperature_c } : {})
     });
   } catch (err:any) {
     console.error('[GET /v1/sessions/:transactionId/progress] error:', err);
