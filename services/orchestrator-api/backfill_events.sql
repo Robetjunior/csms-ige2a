@@ -1,7 +1,7 @@
-﻿INSERT INTO orchestrator.ocpp_events (id, tipo, charge_box_id, transaction_id, id_tag, payload, created_at)
+INSERT INTO orchestrator.ocpp_events (id, event_type, charge_box_id, transaction_id, id_tag, payload, created_at)
 SELECT
   e.id,
-  e.event_type      AS tipo,
+  e.event_type      AS event_type,
   e.charge_box_id,
   e.transaction_pk  AS transaction_id,
   e.id_tag,

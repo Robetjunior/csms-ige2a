@@ -57,7 +57,7 @@ export async function insertEvento(args: InsertEventoArgs): Promise<{ duplicate:
 
   // Inserimos diretamente na tabela base do orchestrator
   const sql = `
-    INSERT INTO orchestrator.ocpp_events (tipo, payload, charge_box_id, transaction_id, id_tag, created_at)
+    INSERT INTO orchestrator.ocpp_events (event_type, payload, charge_box_id, transaction_id, id_tag, created_at)
     VALUES ($1, $2::jsonb, $3, $4, $5, now())
     RETURNING id;
   `;

@@ -38,7 +38,7 @@ router.post('/events', async (req: Request, res: Response) => {
     const ins = await sb
       .from('ocpp_events')
       .insert({
-        tipo: type,
+        event_type: type,
         transaction_id: transactionId,
         charge_box_id: chargeBoxId,
         id_tag: idTag,
@@ -98,7 +98,7 @@ router.post('/events', async (req: Request, res: Response) => {
       const startEv = await sb
         .from('ocpp_events')
         .select('payload, created_at')
-        .eq('tipo', 'StartTransaction')
+        .eq('event_type', 'StartTransaction')
         .eq('transaction_id', transactionId)
         .order('id', { ascending: true })
         .limit(1)

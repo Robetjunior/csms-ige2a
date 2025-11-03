@@ -14,7 +14,6 @@
         "dev:web": "pnpm --filter web-dashboard dev",
         "build": "pnpm -r build",
         "lint": "pnpm -r lint",
-        "test": "jest --runInBand",
         "dev": "ts-node-dev --respawn --transpile-only --poll --interval 300 src/main.ts"
     },
     "keywords": [],

@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { sb } from '../../supabase';
+import { pg } from '../db';
 
 const router = Router();
 const TxParam = z.object({ transactionId: z.coerce.number().int().positive() });
@@ -38,39 +38,41 @@ router.get('/:transactionId/progress', async (req: Request, res: Response) => {
   const tx = parsed.data.transactionId;
 
   try {
-    const s = await sb
-      .from('sessions')
-      .select('started_at, stopped_at')
-      .eq('transaction_id', tx)
-      .order('id', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (s.error) return res.status(500).json({ error: 'query_error', detail: s.error.message });
-    if (!s.data) return res.status(404).json({ error: 'session_not_found' });
+    // Sessão
+    const s = await pg.query<{ started_at: string; stopped_at: string | null }>(
+      `SELECT started_at, stopped_at
+         FROM orchestrator.sessions
+        WHERE transaction_id = $1
+        ORDER BY id DESC
+        LIMIT 1`,
+      [tx]
+    );
+    if (s.rowCount === 0) return res.status(404).json({ error: 'session_not_found' });
 
-    const startedAt = new Date((s.data as any).started_at);
-    const now = (s.data as any).stopped_at ? new Date((s.data as any).stopped_at) : new Date();
+    const startedAt = new Date(s.rows[0].started_at);
+    const now = s.rows[0].stopped_at ? new Date(s.rows[0].stopped_at) : new Date();
     const duration_seconds = Math.max(0, Math.floor((now.getTime() - startedAt.getTime()) / 1000));
 
-    const startEv = await sb
-      .from('ocpp_events')
-      .select('payload')
-      .eq('tipo', 'StartTransaction')
-      .eq('transaction_id', tx)
-      .order('id', { ascending: true })
-      .limit(1)
-      .maybeSingle();
-    if (startEv.error) return res.status(500).json({ error: 'query_error', detail: startEv.error.message });
-    const meterStartWh = Number((startEv.data as any)?.payload?.meterStart ?? 0) || 0;
+    // MeterStart
+    const rStart = await pg.query<{ payload: any }>(
+      `SELECT payload
+         FROM orchestrator.ocpp_events
+        WHERE event_type = $1 AND transaction_id = $2
+        ORDER BY id ASC
+        LIMIT 1`,
+      ['StartTransaction', tx]
+    );
+    const meterStartWh = Number((rStart.rows[0]?.payload?.meterStart ?? 0)) || 0;
 
-    const lastMv = await sb
-      .from('ocpp_events')
-      .select('payload')
-      .eq('tipo', 'MeterValues')
-      .eq('transaction_id', tx)
-      .order('id', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // Último MeterValues
+    const rLast = await pg.query<{ payload: any }>(
+      `SELECT payload
+         FROM orchestrator.ocpp_events
+        WHERE event_type = $1 AND transaction_id = $2
+        ORDER BY id DESC
+        LIMIT 1`,
+      ['MeterValues', tx]
+    );
 
     let meterLatestWh = meterStartWh;
     let soc_percent_at: number | undefined;
@@ -78,8 +80,9 @@ router.get('/:transactionId/progress', async (req: Request, res: Response) => {
     let voltage_v: number | undefined;
     let current_a: number | undefined;
     let temperature_c: number | undefined;
-    if (!lastMv.error && lastMv.data) {
-      const { wh, soc, power_kw: pk, voltage_v: vv, current_a: ca, temperature_c: tc } = extractTelemetry((lastMv.data as any).payload);
+    const lastPayload = rLast.rows[0]?.payload;
+    if (lastPayload) {
+      const { wh, soc, power_kw: pk, voltage_v: vv, current_a: ca, temperature_c: tc } = extractTelemetry(lastPayload);
       if (typeof wh === 'number') meterLatestWh = wh;
       if (typeof soc === 'number') soc_percent_at = soc;
       power_kw = pk; voltage_v = vv; current_a = ca; temperature_c = tc;

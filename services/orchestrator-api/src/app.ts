@@ -19,6 +19,7 @@ import ocppDebug from './routes/ocpp-debug';
 import ocppEventsRouter from './routes/ocpp-events';
 import { streamRouter } from './routes/stream';
 import chargePointsRouter from './routes/charge-points';
+import mobileProxyRouter from './routes/mobile-proxy';
 
 import { buildCors, buildRateLimiter } from './config/http';
 import { requireApiKey } from './middleware/apiKey';
@@ -59,6 +60,9 @@ app.use('/v1/ocpp', buildCors(), ocppEventsRouter);
 
 // 🔊 SSE público (não exige X-API-Key)
 app.use('/v1/stream', streamRouter);
+
+// 📱 Mobile Proxy (público para facilitar uso via USB/localhost)
+app.use('/', mobileProxyRouter);
 
 // 🔐 A partir daqui, /v1/** exige X-API-Key e rate limit
 // Preflight OPTIONS para rotas autenticadas, deve vir ANTES do middleware de auth

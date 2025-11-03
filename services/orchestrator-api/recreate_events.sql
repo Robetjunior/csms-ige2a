@@ -1,4 +1,4 @@
-﻿DROP VIEW IF EXISTS orchestrator.events CASCADE;
+DROP VIEW IF EXISTS orchestrator.events CASCADE;
 
 CREATE VIEW orchestrator.events (
   id,
@@ -15,7 +15,7 @@ SELECT
   e.id,
   e.created_at,
   'orchestrator'::text       AS source,
-  e.tipo                     AS event_type,
+  e.event_type               AS event_type,
   e.charge_box_id,
   NULL::integer              AS connector_pk,
   e.transaction_id           AS transaction_pk,

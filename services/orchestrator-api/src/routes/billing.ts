@@ -115,7 +115,7 @@ router.post('/refresh', async (req: Request, res: Response) => {
   const startEv = await sb
     .from('ocpp_events')
     .select('payload')
-    .eq('tipo','StartTransaction')
+    .eq('event_type','StartTransaction')
     .eq('transaction_id', b.transaction_id)
     .order('id', { ascending: true })
     .limit(1)

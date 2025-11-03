@@ -381,7 +381,7 @@ class TelemetryManager {
         const { data: startEvent, error: startError } = await sb
           .from('ocpp_events')
           .select('payload')
-          .eq('tipo', 'StartTransaction')
+          .eq('event_type', 'StartTransaction')
           .eq('transaction_id', session.transaction_id)
           .order('id', { ascending: true })
           .limit(1)

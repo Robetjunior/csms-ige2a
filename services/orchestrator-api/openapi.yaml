@@ -293,6 +293,60 @@ paths:
               schema:
                 $ref: '#/components/schemas/SessionList'
 
+  /v1/sessions/active/{chargeBoxId}:
+    get:
+      tags: [Sessions]
+      summary: Sessão ativa por chargeBoxId
+      parameters:
+        - in: path
+          name: chargeBoxId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Sessão ativa ou null
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    oneOf:
+                      - $ref: '#/components/schemas/Session'
+                      - type: 'null'
+
+  /v1/sessions/active/{chargeBoxId}/detail:
+    get:
+      tags: [Sessions]
+      summary: Detalhe da sessão ativa (telemetria)
+      parameters:
+        - in: path
+          name: chargeBoxId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Sessão ativa com telemetria
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    oneOf:
+                      - $ref: '#/components/schemas/Session'
+                      - type: 'null'
+                  telemetry:
+                    type: object
+                    nullable: true
+                    properties:
+                      kwh: { type: number, format: double }
+                      power_kw: { type: number, format: double, nullable: true }
+                      voltage_v: { type: number, format: double, nullable: true }
+                      current_a: { type: number, format: double, nullable: true }
+                      temperature_c: { type: number, format: double, nullable: true }
+                      soc_percent_at: { type: integer, format: int32, nullable: true }
+
   /v1/sessions/{transactionId}:
     get:
       tags: [Sessions]

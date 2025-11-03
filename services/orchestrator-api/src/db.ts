@@ -1,5 +1,8 @@
 import dotenv from 'dotenv';
+import path from 'node:path';
+// Carrega .env local e também tenta carregar o .env da raiz do projeto
 dotenv.config();
+dotenv.config({ path: path.resolve(process.cwd(), '../../.env'), override: false });
 
 import dns from 'dns';
 import { Pool, PoolConfig, PoolClient, QueryResult, QueryResultRow } from 'pg';
@@ -14,6 +17,12 @@ let envLogged = false;
   const hasSbKey = Boolean(process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY);
   console.log('[db.env] SUPABASE configured:', hasSbUrl && hasSbKey ? 'yes' : 'no');
   console.log('[db.env] NODE_ENV:', process.env.NODE_ENV || 'undefined');
+  // Diagnóstico fino de SSL/PG
+  console.log('[db.env] PG_SSL:', process.env.PG_SSL ?? '(unset)');
+  console.log('[db.env] PG_SSL_ENABLED:', process.env.PG_SSL_ENABLED ?? '(unset)');
+  console.log('[db.env] PG_SSL_REJECT_UNAUTHORIZED:', process.env.PG_SSL_REJECT_UNAUTHORIZED ?? '(unset)');
+  console.log('[db.env] POSTGRES_URI set:', Boolean(process.env.POSTGRES_URI) ? 'yes' : 'no');
+  console.log('[db.env] SUPABASE_DB_URL set:', Boolean(process.env.SUPABASE_DB_URL) ? 'yes' : 'no');
 })();
 
 /* Supabase (HTTP SDK) — opcional */
