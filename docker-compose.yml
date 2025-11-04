@@ -19,6 +19,7 @@ services:
       PORT: "3000"
       PG_POOL_MAX: "10"
       PG_SSL_REJECT_UNAUTHORIZED: "0"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
       OCPP_ENGINE_KIND: mock
       OCPP_ENGINE_URL: ""
       CHOKIDAR_USEPOLLING: "true"
