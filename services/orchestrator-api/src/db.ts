@@ -8,6 +8,20 @@ import dns from 'dns';
 import { Pool, PoolConfig, PoolClient, QueryResult, QueryResultRow } from 'pg';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
+/* Força IPv4 globalmente quando solicitado (contorna ENETUNREACH/IPv6) */
+(() => {
+  const force4 = (process.env.PG_FORCE_IPV4 || '0') === '1';
+  if (force4) {
+    const origLookup = dns.lookup;
+    // Sobrescreve dns.lookup para sempre usar família 4
+    (dns as any).lookup = function(hostname: string, options: any, callback: any) {
+      if (typeof options === 'function') { callback = options; options = {}; }
+      return origLookup.call(dns, hostname, { ...(options || {}), family: 4, all: false }, callback);
+    } as any;
+    console.log('[net.dns] Forçando IPv4 em dns.lookup');
+  }
+})();
+
 /* Log leve do ambiente (sem segredos) */
 let envLogged = false;
 (function logDbEnvOnce() {
