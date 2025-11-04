@@ -172,10 +172,38 @@ router.patch('/:chargeBoxId/location', async (req:Request, res:Response)=>{
     const { latitude, longitude, address } = (req.body||{}) as {latitude:number;longitude:number;address?:string|null};
     const lat = Number(latitude), lon = Number(longitude);
     if (!isValidLatLon(lat, lon)) return err(res,400,'invalid_parameters');
-    const rpc = await withTimeout(sb.rpc('set_cp_location', { p_charge_box_id:String(chargeBoxId), p_lat:lat, p_lon:lon, p_address: address ?? null }));
+    // Alguns ambientes possuem duas versões da função RPC (com e sem p_upsert)
+    // Para evitar ambiguidade, sempre enviamos p_upsert
+    const rpc = await withTimeout(sb.rpc('set_cp_location', {
+      p_charge_box_id: String(chargeBoxId),
+      p_lat: lat,
+      p_lon: lon,
+      p_address: address ?? null,
+      p_upsert: true,
+    }));
     if (!rpc || rpc.error) { console.error('[rpc set_cp_location]', rpc?.error?.message||rpc?.error||'timeout'); return err(res,500); }
     t.done(); return ok(res, { ok:true });
   } catch(e:any){ console.error('[patch location]',e?.message||e); return err(res,500); }
+});
+
+/* POST /v1/chargers/:chargeBoxId/location (alias do PATCH) */
+router.post('/:chargeBoxId/location', async (req:Request, res:Response)=>{
+  const t = timed('chargers/location(post)');
+  try{
+    const { chargeBoxId } = req.params;
+    const { latitude, longitude, address } = (req.body||{}) as {latitude:number;longitude:number;address?:string|null};
+    const lat = Number(latitude), lon = Number(longitude);
+    if (!isValidLatLon(lat, lon)) return err(res,400,'invalid_parameters');
+    const rpc = await withTimeout(sb.rpc('set_cp_location', {
+      p_charge_box_id: String(chargeBoxId),
+      p_lat: lat,
+      p_lon: lon,
+      p_address: address ?? null,
+      p_upsert: true,
+    }));
+    if (!rpc || rpc.error) { console.error('[rpc set_cp_location]', rpc?.error?.message||rpc?.error||'timeout'); return err(res,500); }
+    t.done(); return ok(res, { ok:true });
+  } catch(e:any){ console.error('[post location]',e?.message||e); return err(res,500); }
 });
 
 export default router;
