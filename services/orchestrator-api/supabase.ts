@@ -9,7 +9,8 @@ dotenv.config();
 dotenv.config({ path: path.resolve(process.cwd(), '../../.env'), override: false });
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
+// Aceita chaves novas (SUPABASE_KEY) e antigas (SERVICE/ANON)
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
 
 export const sb = (SUPABASE_URL && SUPABASE_SERVICE_KEY)
   ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
