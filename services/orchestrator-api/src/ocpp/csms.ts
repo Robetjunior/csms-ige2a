@@ -314,7 +314,7 @@ export class OcppCsms extends EventEmitter {
 
           // Processa telemetria em tempo real
           try {
-            await telemetryManager.processMeterValues(chargeBoxId, p);
+            await telemetryManager.processMeterValues(chargeBoxId, Number.isFinite(tx) ? tx : 0, p);
           } catch (e:any) {
             console.warn('[OCPP] telemetryManager.processMeterValues falhou:', e?.message || e);
           }

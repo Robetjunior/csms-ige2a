@@ -1,7 +1,7 @@
 // src/services/telemetry-manager.ts
 import { publish } from '../routes/stream';
 import { TelemetryData } from '../routes/stream';
-import { sb } from '../../supabase';
+import { pg } from '../db';
 import { 
   TELEMETRY_CONFIG, 
   validateTelemetryConfig,
@@ -364,42 +364,38 @@ class TelemetryManager {
   async loadActiveSessionsFromDatabase() {
     try {
       console.log('[Telemetry] Carregando sessões ativas do banco...');
-      
-      const { data: sessions, error } = await sb
-        .from('sessions')
-        .select('transaction_id, charge_box_id, started_at, id_tag')
-        .is('stopped_at', null)
-        .order('started_at', { ascending: false });
+      // Preferir Postgres (evita TLS em ambientes com interceptador)
+      const sessions = await pg.query<{
+        transaction_id: number;
+        charge_box_id: string;
+        started_at: string;
+        id_tag: string | null;
+      }>(
+        `SELECT transaction_id, charge_box_id, started_at, id_tag
+           FROM orchestrator.sessions
+          WHERE stopped_at IS NULL
+          ORDER BY started_at DESC`
+      );
 
-      if (error) {
-        console.error('[Telemetry] Erro ao carregar sessões ativas:', error);
-        return;
-      }
-
-      for (const session of sessions || []) {
+      for (const s of sessions.rows) {
         // Busca meterStart do StartTransaction
-        const { data: startEvent, error: startError } = await sb
-          .from('ocpp_events')
-          .select('payload')
-          .eq('event_type', 'StartTransaction')
-          .eq('transaction_id', session.transaction_id)
-          .order('id', { ascending: true })
-          .limit(1)
-          .maybeSingle();
+        const rStart = await pg.query<{ payload: any }>(
+          `SELECT payload
+             FROM orchestrator.ocpp_events
+            WHERE event_type = $1 AND transaction_id = $2
+            ORDER BY id ASC
+            LIMIT 1`,
+          ['StartTransaction', s.transaction_id]
+        );
 
-        if (startError) {
-          console.warn(`[Telemetry] Erro ao buscar StartTransaction para TX=${session.transaction_id}:`, startError);
-          continue;
-        }
-
-        const meterStartWh = Number(startEvent?.payload?.meterStart ?? 0);
+        const meterStartWh = Number((rStart.rows[0]?.payload?.meterStart ?? 0)) || 0;
 
         this.startSession({
-          transactionId: session.transaction_id,
-          chargeBoxId: session.charge_box_id,
-          startedAt: new Date(session.started_at),
+          transactionId: s.transaction_id,
+          chargeBoxId: s.charge_box_id,
+          startedAt: new Date(s.started_at),
           meterStartWh,
-          idTag: session.id_tag,
+          idTag: s.id_tag,
         });
       }
 
