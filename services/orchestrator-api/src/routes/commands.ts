@@ -3,6 +3,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { sb } from '../../supabase';
 import { csms } from '../ocpp/csms';
+import { pg } from '../db';
 
 const router = Router();
 
@@ -15,6 +16,7 @@ const RemoteStartSchema = z.object({
 
 const RemoteStopSchema = z.object({
   transactionId: z.number().int().positive(),
+  chargeBoxId: z.string().min(1).optional(),
 });
 
 const ResetSchema = z.object({
@@ -217,8 +219,21 @@ router.post('/remoteStop', async (req: Request, res: Response) => {
   }
   const tx = parsed.data.transactionId;
 
-  // 🔎 tenta identificar o CP dono do tx (se ainda online)
-  const chargeBoxId = csms.resolveTx(tx);
+  // 🔎 tenta identificar o CP dono do tx (se ainda online) com fallback para sessão
+  let chargeBoxId: string | null = parsed.data.chargeBoxId || csms.resolveTx(tx) || null;
+  if (!chargeBoxId) {
+    try {
+      const r = await pg.query<{ charge_box_id: string | null }>(
+        `SELECT charge_box_id
+           FROM orchestrator.sessions
+          WHERE transaction_id = $1
+          ORDER BY id DESC
+          LIMIT 1`,
+        [tx]
+      );
+      chargeBoxId = r.rows[0]?.charge_box_id || null;
+    } catch {}
+  }
 
   // idempotência básica
   const existing = await sb
@@ -239,10 +254,17 @@ router.post('/remoteStop', async (req: Request, res: Response) => {
   }
 
   // registra o comando com charge_box_id (quando conhecido)
+  if (!chargeBoxId) {
+    return res.status(409).json({
+      error: 'charge_point_unknown',
+      detail: 'Não foi possível identificar o chargeBoxId para o transactionId informado.',
+      hint: 'Envie chargeBoxId no payload ou garanta que a sessão existe com charge_box_id preenchido.'
+    });
+  }
   const ins = await sb.from('commands').insert({
     command_type: 'RemoteStop',
     transaction_id: tx,
-    charge_box_id: chargeBoxId ?? null,  // ✅ NOVO
+    charge_box_id: chargeBoxId,
     requested_by: 'api',
     status: 'pending',
     payload: { transactionId: tx },
