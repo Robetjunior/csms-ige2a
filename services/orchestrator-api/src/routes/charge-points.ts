@@ -22,13 +22,17 @@ type MapPoint = {
 // GET /v1/charge-points/near?lat=...&lon=...&maxKm=...&limit=...
 router.get('/near', async (req: Request, res: Response) => {
   const t0 = Date.now();
+  const rid = Math.random().toString(36).slice(2, 8);
   const lat = Number(req.query.lat);
   const lon = Number(req.query.lon);
   const maxKm = Number(req.query.maxKm ?? '10');
   const limitRaw = Number(req.query.limit ?? '50');
   const limit = Number.isFinite(limitRaw) ? Math.min(limitRaw, 200) : 50;
 
-  console.log('[near] start', { lat, lon, maxKm, limit });
+  // Log 1: início
+  console.log(`[near:${rid}] start`);
+  // Log 2: parâmetros normalizados
+  console.log(`[near:${rid}] params`, { lat, lon, maxKm, limit });
 
   try {
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
@@ -38,6 +42,8 @@ router.get('/near', async (req: Request, res: Response) => {
     const client = await pg.connect();
     try {
       await client.query('BEGIN');
+      // Log 3: início da transação + timeout
+      console.log(`[near:${rid}] db.begin timeout=4s`);
       await client.query("SET LOCAL statement_timeout = '4s'");
 
       const sql = 'SELECT * FROM map_find_near($1,$2,$3,$4)';
@@ -49,6 +55,8 @@ router.get('/near', async (req: Request, res: Response) => {
       ]);
 
       await client.query('COMMIT');
+      // Log 4: resultado da consulta
+      console.log(`[near:${rid}] db.query ok rows=${rows?.length ?? 0}`);
 
       const items: MapPoint[] = (rows ?? []).map((r: any) => ({
         id: String(r.id),
@@ -60,11 +68,12 @@ router.get('/near', async (req: Request, res: Response) => {
         distance_km: Number(r.distance_km ?? 0),
       }));
 
-      console.log(`[near] done in ${Date.now() - t0}ms count=${items.length}`);
+      // Log 5: fim com duração e contagem
+      console.log(`[near:${rid}] done duration_ms=${Date.now() - t0} count=${items.length}`);
       return res.json({ items });
     } catch (e: any) {
       try { await client.query('ROLLBACK'); } catch {}
-      console.error('[near] error', e?.message || e);
+      console.error(`[near:${rid}] error`, e?.message || e);
       return res.status(504).json({ error: 'near timeout/failed' });
     } finally {
       client.release();
@@ -72,11 +81,6 @@ router.get('/near', async (req: Request, res: Response) => {
   } catch (e: any) {
     console.error('[charge-points/near] unexpected', e?.message || e);
     return res.status(500).json({ error: 'internal_error' });
-  } finally {
-    // fallback log if we reached here without the success path
-    if (Number.isFinite(lat) && Number.isFinite(lon)) {
-      console.log(`[near] done in ${Date.now() - t0}ms`);
-    }
   }
 });
 
