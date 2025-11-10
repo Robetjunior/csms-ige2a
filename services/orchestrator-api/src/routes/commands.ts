@@ -367,7 +367,7 @@ router.post('/remoteStop', async (req: Request, res: Response) => {
     }
 
     try {
-      await csms.remoteStop(tx);
+      await csms.remoteStop(tx, chargeBoxId!);
       try {
         await pg.query(`UPDATE orchestrator.commands SET status='sent', updated_at=now() WHERE id=$1`, [cmdId2!]);
       } catch (e:any) {

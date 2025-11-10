@@ -85,8 +85,8 @@ export class OcppCsms extends EventEmitter {
     });
   }
 
-  async remoteStop(transactionId: number) {
-    const cbid = this.registry.resolveTx(transactionId);
+  async remoteStop(transactionId: number, chargeBoxId?: string) {
+    const cbid = chargeBoxId || this.registry.resolveTx(transactionId);
     if (!cbid) throw new Error('unknown_transaction');
     const ws = this.registry.getPeer(cbid);
     if (!ws || ws.readyState !== ws.OPEN) throw new Error('charge_point_offline');
