@@ -27,6 +27,7 @@ export interface ActiveSession {
 
 export interface MeterValuesPayload {
   transactionId?: number;
+  connectorId?: number;
   meterValue?: Array<{
     timestamp?: string;
     sampledValue?: Array<{
@@ -37,6 +38,26 @@ export interface MeterValuesPayload {
       phase?: string;
       location?: string;
       unit?: string;
+    }>;
+  }>;
+}
+
+// OCPP 2.0.1 — TransactionEvent
+export interface TransactionEventPayload {
+  eventType: 'Started' | 'Updated' | 'Ended';
+  timestamp?: string;
+  transactionInfo?: {
+    transactionId?: string | number;
+    totalEnergyConsumed?: number; // Wh
+    idToken?: { idToken?: string } | null;
+  };
+  evse?: { id?: number; connectorId?: number } | null;
+  transactionData?: Array<{
+    sampledValue?: Array<{
+      value?: string | number;
+      measurand?: string;   // e.g. Energy.Active.Import.Register, Power.Active.Import
+      phase?: string;       // L1, L2, L3, L1-N, etc.
+      unit?: string;        // Wh, W, V, A, C, Percent
     }>;
   }>;
 }
@@ -267,13 +288,52 @@ class TelemetryManager {
       // Atualizar timestamp
       this.lastUpdate.set(transactionId, now);
 
+      const updatedAtISO = new Date().toISOString();
+
+      // Persistir última telemetria por sessão (telemetry_latest)
+      try {
+        const connectorId = Number(payload.connectorId || 1);
+        await pg.query(
+          `INSERT INTO orchestrator.telemetry_latest (
+             transaction_id, charge_box_id, connector_id,
+             energy_kwh, power_kw, voltage_v, current_a, soc_percent, temperature_c,
+             duration_seconds, at
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+           ON CONFLICT (transaction_id, connector_id)
+           DO UPDATE SET
+             energy_kwh = COALESCE(EXCLUDED.energy_kwh, orchestrator.telemetry_latest.energy_kwh),
+             power_kw = COALESCE(EXCLUDED.power_kw, orchestrator.telemetry_latest.power_kw),
+             voltage_v = COALESCE(EXCLUDED.voltage_v, orchestrator.telemetry_latest.voltage_v),
+             current_a = COALESCE(EXCLUDED.current_a, orchestrator.telemetry_latest.current_a),
+             soc_percent = COALESCE(EXCLUDED.soc_percent, orchestrator.telemetry_latest.soc_percent),
+             temperature_c = COALESCE(EXCLUDED.temperature_c, orchestrator.telemetry_latest.temperature_c),
+             duration_seconds = EXCLUDED.duration_seconds,
+             at = EXCLUDED.at`,
+          [
+            transactionId,
+            chargeBoxId,
+            connectorId,
+            validatedData.energy_kwh ?? null,
+            validatedData.power_kw ?? null,
+            validatedData.voltage_v ?? null,
+            validatedData.current_a ?? null,
+            validatedData.soc_percent ?? null,
+            validatedData.temperature_c ?? null,
+            validatedData.duration_seconds ?? null,
+            updatedAtISO,
+          ]
+        );
+      } catch (err) {
+        telemetryLogger.logError(err as Error, { transactionId, chargeBoxId, operation: 'upsertTelemetryLatest' });
+      }
+
       // Publicar evento de telemetria via SSE
       await publish({
         type: 'telemetry.updated',
         chargeBoxId,
         transactionId,
         telemetry: validatedData,
-        updatedAt: new Date().toISOString(),
+        updatedAt: updatedAtISO,
       });
 
       // Log de sucesso
@@ -297,6 +357,11 @@ class TelemetryManager {
    */
   private extractTelemetryFromMeterValues(payload: MeterValuesPayload, session: ActiveSession): TelemetryData {
     const telemetry: TelemetryData = {};
+    // Acumuladores por fase
+    const powerWByPhase: Record<string, number> = {};
+    const voltageVByPhase: Record<string, number> = {};
+    const currentAByPhase: Record<string, number> = {};
+    let energyWhLatest: number | undefined;
     
     try {
       const meterValues = payload.meterValue || [];
@@ -306,30 +371,32 @@ class TelemetryManager {
         
         for (const sample of samples) {
           const measurand = (sample.measurand || '').toString();
+          const phase = (sample.phase || '').toString();
           const valueStr = (sample.value || '').toString().trim();
           const value = Number(valueStr);
-          
           if (!Number.isFinite(value)) continue;
 
-          // Energia acumulada (Wh -> kWh)
+          // Energia acumulada (Wh)
           if (!measurand || /Energy\.Active\.Import\.Register/i.test(measurand)) {
-            const energyKwh = Math.max(0, (value - session.meterStartWh) / 1000);
-            telemetry.energy_kwh = Number(energyKwh.toFixed(3));
+            energyWhLatest = value;
           }
           
-          // Potência ativa (W -> kW)
+          // Potência ativa (W) — somar por fase
           else if (/Power\.Active\.Import/i.test(measurand)) {
-            telemetry.power_kw = Number((value / 1000).toFixed(3));
+            const key = phase || 'total';
+            powerWByPhase[key] = (powerWByPhase[key] || 0) + value;
           }
           
-          // Tensão (V)
+          // Tensão (V) — média das fases medidas
           else if (/Voltage/i.test(measurand)) {
-            telemetry.voltage_v = Number(value.toFixed(1));
+            const key = phase || 'total';
+            voltageVByPhase[key] = value;
           }
           
-          // Corrente (A)
-          else if (/Current\.Import/i.test(measurand)) {
-            telemetry.current_a = Number(value.toFixed(2));
+          // Corrente (A) — somar por fase
+          else if (/Current\.Import/i.test(measurand) || /^Current$/i.test(measurand)) {
+            const key = phase || 'total';
+            currentAByPhase[key] = (currentAByPhase[key] || 0) + value;
           }
           
           // Estado de carga (%)
@@ -342,6 +409,31 @@ class TelemetryManager {
             telemetry.temperature_c = Number(value.toFixed(1));
           }
         }
+      }
+
+      // Energia acumulada (kWh) a partir do último Wh
+      if (typeof energyWhLatest === 'number' && Number.isFinite(energyWhLatest)) {
+        const energyKwh = Math.max(0, (energyWhLatest - session.meterStartWh) / 1000);
+        telemetry.energy_kwh = Number(energyKwh.toFixed(3));
+      }
+
+      // Potência (kW): somar todas as fases (ou total)
+      const totalPowerW = Object.values(powerWByPhase).reduce((a, b) => a + b, 0);
+      if (Number.isFinite(totalPowerW) && totalPowerW > 0) {
+        telemetry.power_kw = Number((totalPowerW / 1000).toFixed(3));
+      }
+
+      // Tensão (V): média das fases medidas
+      const voltVals = Object.values(voltageVByPhase).filter(v => Number.isFinite(v));
+      if (voltVals.length) {
+        const avgV = voltVals.reduce((a, b) => a + b, 0) / voltVals.length;
+        telemetry.voltage_v = Number(avgV.toFixed(1));
+      }
+
+      // Corrente (A): soma das fases
+      const totalA = Object.values(currentAByPhase).reduce((a, b) => a + b, 0);
+      if (Number.isFinite(totalA) && totalA > 0) {
+        telemetry.current_a = Number(totalA.toFixed(2));
       }
 
       // Calcula duração da sessão
@@ -402,6 +494,115 @@ class TelemetryManager {
       console.log(`[Telemetry] ${this.activeSessions.size} sessões ativas carregadas`);
     } catch (error) {
       console.error('[Telemetry] Erro ao carregar sessões ativas:', error);
+    }
+  }
+
+  /**
+   * Processa eventos OCPP 2.0.1 TransactionEvent (Updated/Ended) e emite telemetria
+   */
+  async processTransactionEvent(chargeBoxId: string, payload: TransactionEventPayload): Promise<void> {
+    try {
+      const tx = Number(payload?.transactionInfo?.transactionId ?? payload?.evse?.id ?? 0);
+      if (!Number.isFinite(tx) || tx <= 0) return;
+
+      const session = this.activeSessions.get(tx);
+      if (!session) return;
+
+      const telemetry: TelemetryData = {};
+      const powerWByPhase: Record<string, number> = {};
+      const voltageVByPhase: Record<string, number> = {};
+      const currentAByPhase: Record<string, number> = {};
+
+      // totalEnergyConsumed (Wh) — fonte preferencial
+      const totalEnergyConsumed = Number(payload?.transactionInfo?.totalEnergyConsumed ?? NaN);
+      if (Number.isFinite(totalEnergyConsumed)) {
+        const energyKwh = Math.max(0, totalEnergyConsumed / 1000);
+        telemetry.energy_kwh = Number(energyKwh.toFixed(3));
+      }
+
+      // transactionData.sampledValue — similar ao MeterValues
+      const arr = payload?.transactionData || [];
+      for (const td of arr) {
+        const samples = td?.sampledValue || [];
+        for (const sv of samples) {
+          const meas = (sv?.measurand || '').toString();
+          const phase = (sv?.phase || '').toString();
+          const val = Number((sv?.value ?? '').toString());
+          if (!Number.isFinite(val)) continue;
+
+          if (/Power\.Active\.Import/i.test(meas)) {
+            const key = phase || 'total';
+            powerWByPhase[key] = (powerWByPhase[key] || 0) + val;
+          } else if (/Voltage/i.test(meas)) {
+            const key = phase || 'total';
+            voltageVByPhase[key] = val;
+          } else if (/Current\.Import/i.test(meas) || /^Current$/i.test(meas)) {
+            const key = phase || 'total';
+            currentAByPhase[key] = (currentAByPhase[key] || 0) + val;
+          } else if (/^SoC$/i.test(meas)) {
+            telemetry.soc_percent = Math.round(val);
+          } else if (/Temperature/i.test(meas)) {
+            telemetry.temperature_c = Number(val.toFixed(1));
+          } else if (!meas || /Energy\.Active\.Import\.Register/i.test(meas)) {
+            const energyKwh = Math.max(0, (val - session.meterStartWh) / 1000);
+            telemetry.energy_kwh = Number(energyKwh.toFixed(3));
+          }
+        }
+      }
+
+      const totalPowerW = Object.values(powerWByPhase).reduce((a, b) => a + b, 0);
+      if (Number.isFinite(totalPowerW) && totalPowerW > 0) telemetry.power_kw = Number((totalPowerW / 1000).toFixed(3));
+      const voltVals = Object.values(voltageVByPhase).filter(v => Number.isFinite(v));
+      if (voltVals.length) telemetry.voltage_v = Number((voltVals.reduce((a, b) => a + b, 0) / voltVals.length).toFixed(1));
+      const totalA = Object.values(currentAByPhase).reduce((a, b) => a + b, 0);
+      if (Number.isFinite(totalA) && totalA > 0) telemetry.current_a = Number(totalA.toFixed(2));
+
+      const now = new Date();
+      telemetry.duration_seconds = Math.floor((now.getTime() - session.startedAt.getTime()) / 1000);
+
+      const validated = this.validateTelemetryData(telemetry, tx, chargeBoxId);
+      if (!validated) return;
+
+      const updatedAtISO = new Date().toISOString();
+      try {
+        const connectorId = Number(payload?.evse?.connectorId || 1);
+        await pg.query(
+          `INSERT INTO orchestrator.telemetry_latest (
+             transaction_id, charge_box_id, connector_id,
+             energy_kwh, power_kw, voltage_v, current_a, soc_percent, temperature_c,
+             duration_seconds, at
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+           ON CONFLICT (transaction_id, connector_id)
+           DO UPDATE SET
+             energy_kwh = COALESCE(EXCLUDED.energy_kwh, orchestrator.telemetry_latest.energy_kwh),
+             power_kw = COALESCE(EXCLUDED.power_kw, orchestrator.telemetry_latest.power_kw),
+             voltage_v = COALESCE(EXCLUDED.voltage_v, orchestrator.telemetry_latest.voltage_v),
+             current_a = COALESCE(EXCLUDED.current_a, orchestrator.telemetry_latest.current_a),
+             soc_percent = COALESCE(EXCLUDED.soc_percent, orchestrator.telemetry_latest.soc_percent),
+             temperature_c = COALESCE(EXCLUDED.temperature_c, orchestrator.telemetry_latest.temperature_c),
+             duration_seconds = EXCLUDED.duration_seconds,
+             at = EXCLUDED.at`,
+          [
+            tx,
+            chargeBoxId,
+            Number(payload?.evse?.connectorId || 1),
+            validated.energy_kwh ?? null,
+            validated.power_kw ?? null,
+            validated.voltage_v ?? null,
+            validated.current_a ?? null,
+            validated.soc_percent ?? null,
+            validated.temperature_c ?? null,
+            validated.duration_seconds ?? null,
+            updatedAtISO,
+          ]
+        );
+      } catch (err) {
+        telemetryLogger.logError(err as Error, { transactionId: tx, chargeBoxId, operation: 'upsertTelemetryLatest@TransactionEvent' });
+      }
+
+      await publish({ type: 'telemetry.updated', chargeBoxId, transactionId: tx, telemetry: validated, updatedAt: updatedAtISO });
+    } catch (error) {
+      telemetryLogger.logError(error as Error, { operation: 'processTransactionEvent' });
     }
   }
 }

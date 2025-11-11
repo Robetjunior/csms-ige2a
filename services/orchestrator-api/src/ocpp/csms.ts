@@ -322,6 +322,66 @@ export class OcppCsms extends EventEmitter {
           return;
         }
 
+        // OCPP 2.0.1 — TransactionEvent (Started/Updated/Ended)
+        case 'TransactionEvent': {
+          // Acknowledge imediatamente
+          ack();
+
+          try {
+            await insertEvento({
+              tipo: 'TransactionEvent',
+              payload: p,
+              chargeBoxId,
+              idTag: null,
+              transactionId: Number(p?.transactionInfo?.transactionId ?? 0) || null,
+            });
+          } catch (e:any) {
+            console.warn('[OCPP] insertEvento TransactionEvent falhou:', e?.message || e);
+          }
+
+          // Eventos de sessão
+          try {
+            const evType = String(p?.eventType || '').toLowerCase();
+            const txIdNum = Number(p?.transactionInfo?.transactionId ?? 0);
+            const startedAt = p?.timestamp ? new Date(p.timestamp) : new Date();
+            const connectorId = Number(p?.evse?.connectorId || 1);
+
+            if (evType === 'started' && Number.isFinite(txIdNum) && txIdNum > 0) {
+              // Registra sessão e telemetry
+              await upsertSessionStart({ transactionId: txIdNum, chargeBoxId, idTag: p?.transactionInfo?.idToken?.idToken ?? null, startedAt });
+              telemetryManager.startSession({
+                transactionId: txIdNum,
+                chargeBoxId,
+                startedAt,
+                meterStartWh: Number(p?.transactionInfo?.totalEnergyConsumed ?? 0),
+                idTag: p?.transactionInfo?.idToken?.idToken ?? null,
+              });
+              this.emitStatusChanged(chargeBoxId, connectorId, 'Charging', startedAt.toISOString());
+            }
+
+            if (evType === 'updated') {
+              // Telemetria em tempo real
+              try { await telemetryManager.processTransactionEvent(chargeBoxId, p); } catch (e:any) {
+                console.warn('[OCPP] telemetryManager.processTransactionEvent falhou:', e?.message || e);
+              }
+            }
+
+            if (evType === 'ended' && Number.isFinite(txIdNum) && txIdNum > 0) {
+              const stoppedAt = p?.timestamp ? new Date(p.timestamp) : new Date();
+              try {
+                await stopSession({ transactionId: txIdNum, stoppedAt, stopReason: p?.triggerReason ?? 'Local' });
+                telemetryManager.stopSession(txIdNum);
+              } catch (e:any) { console.warn('[OCPP] stopSession@TransactionEvent falhou:', e?.message || e); }
+
+              try { publish({ type: 'session.stopped', chargeBoxId, transactionId: txIdNum, stoppedAt: stoppedAt.toISOString(), reason: String(p?.triggerReason || 'Local') }); } catch {}
+              this.emitStatusChanged(chargeBoxId, connectorId, 'Available', stoppedAt.toISOString());
+            }
+          } catch (e:any) {
+            console.warn('[OCPP] handle TransactionEvent falhou:', e?.message || e);
+          }
+          return;
+        }
+
         case 'StopTransaction': {
           const tx = Number(p?.transactionId);
           const stoppedAt = p?.timestamp ? new Date(p.timestamp) : new Date();
