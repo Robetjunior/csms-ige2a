@@ -130,6 +130,23 @@ POST /v1/telemetry/reset-metrics
 - Valida dados extraídos
 - Emite evento SSE se válido
 
+#### Mapeamento de MeterValues → Telemetria Normalizada
+
+O payload OCPP 1.6 vem como uma lista `meterValue[].sampledValue[]` com `measurand`, `value` (string) e `unit`.
+O Orchestrator converte para campos normalizados usados pelo app:
+
+- `Energy.Active.Import.Register (Wh|kWh)` → energia acumulada. Internamente guardamos `wh` e derivamos `energy_kwh = (wh - meterStartWh)/1000`.
+- `Power.Active.Import (W|kW)` → `power_kw` (sempre em kW). Se vier em W, convertemos por `val/1000`.
+- `Voltage (V)` → `voltage_v`.
+- `Current.Import (A)` → `current_a`.
+- `Temperature (Celsius)` → `temperature_c`.
+- `SoC (Percent)` → `soc_percent` (exposto como `soc_percent_at` no detail).
+
+Notas de unidade:
+- Potência: sempre convertida para kW, inclusive valores baixos (<100 W) — evita exibir 50 W como 50 kW.
+- Energia: se vier em `kWh`, convertemos para `Wh` para cálculo relativo com `meterStartWh` e retornamos em `kWh` no endpoint.
+- Tensão, Corrente, Temperatura e SoC são usados diretamente conforme unidade padrão.
+
 ### StopTransaction
 - Remove sessão ativa
 - Limpa dados de throttling
