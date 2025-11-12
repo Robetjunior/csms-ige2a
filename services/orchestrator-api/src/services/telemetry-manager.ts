@@ -13,6 +13,7 @@ import {
   isValidEnergy
 } from '../config/telemetry';
 import { telemetryLogger } from '../utils/telemetry-logger';
+import { sb } from '../../supabase';
 
 /* ============================ Tipos ============================ */
 export interface ActiveSession {
@@ -23,6 +24,8 @@ export interface ActiveSession {
   meterStartWh: number;
   lastMeterWh?: number;
   idTag?: string | null;
+  lastNormalized?: Partial<TelemetryData>;
+  pricePerKWh?: number;
 }
 
 export interface MeterValuesPayload {
@@ -76,6 +79,54 @@ class TelemetryManager {
   // Configurações
   private readonly THROTTLE_INTERVAL_MS = Number(process.env.TELEMETRY_THROTTLE_MS ?? '5000'); // 5s padrão (alinha ao simulador)
   private readonly MIN_UPDATE_INTERVAL_MS = 3000; // Permite modo rápido (~3s)
+  private priceCache = new Map<string, { price: number; at: number }>();
+  private readonly PRICE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+
+  /** Resolve e cacheia o preço por kWh para um charge box */
+  private async getPricePerKWh(chargeBoxId: string): Promise<number | undefined> {
+    try {
+      const now = Date.now();
+      const cached = this.priceCache.get(chargeBoxId);
+      if (cached && now - cached.at < this.PRICE_TTL_MS) return cached.price;
+
+      // 1) Tentar resolver via RPC resolve_tariff (ANY)
+      const atISO = new Date().toISOString();
+      const r = await sb.rpc('resolve_tariff', {
+        p_charge_box_id: chargeBoxId,
+        p_mode: 'ANY',
+        p_at: atISO,
+      });
+      if (!r.error && Array.isArray(r.data) && r.data.length) {
+        const price = Number(r.data[0]?.price_kwh ?? 0);
+        if (Number.isFinite(price) && price >= 0) {
+          this.priceCache.set(chargeBoxId, { price, at: now });
+          return price;
+        }
+      }
+
+      // 2) Fallback: último snapshot de tarifa para o charge box
+      const snap = await sb
+        .from('tariff_snapshots')
+        .select('price_kwh')
+        .eq('charge_box_id', chargeBoxId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const price = Number(snap?.data?.price_kwh ?? NaN);
+      if (Number.isFinite(price) && price >= 0) {
+        this.priceCache.set(chargeBoxId, { price, at: now });
+        return price;
+      }
+
+      // 3) Retornar cache antigo se existir
+      if (cached) return cached.price;
+      return undefined;
+    } catch (err) {
+      telemetryLogger.logError(err as Error, { operation: 'getPricePerKWh', chargeBoxId });
+      const cached = this.priceCache.get(chargeBoxId);
+      return cached?.price;
+    }
+  }
 
   /* ============================ Gerenciamento de Sessões ============================ */
   
@@ -96,6 +147,8 @@ class TelemetryManager {
       meterStartWh: params.meterStartWh,
       lastMeterWh: params.meterStartWh,
       idTag: params.idTag,
+      lastNormalized: undefined,
+      pricePerKWh: undefined,
     };
     
     this.activeSessions.set(params.transactionId, session);
@@ -273,7 +326,7 @@ class TelemetryManager {
         return;
       }
 
-      // Extrair e validar dados de telemetria
+      // Extrair e validar dados de telemetria (formato interno)
       const telemetryData = this.extractTelemetryFromMeterValues(payload, session);
       
       if (!telemetryData || Object.keys(telemetryData).length === 0) {
@@ -281,10 +334,10 @@ class TelemetryManager {
       }
 
       // Validar dados extraídos
-       const validatedData = this.validateTelemetryData(telemetryData, transactionId, chargeBoxId);
-       if (!validatedData || Object.keys(validatedData).length === 0) {
-         return;
-       }
+      const validatedData = this.validateTelemetryData(telemetryData, transactionId, chargeBoxId);
+      if (!validatedData || Object.keys(validatedData).length === 0) {
+        return;
+      }
 
       // Atualizar timestamp
       this.lastUpdate.set(transactionId, now);
@@ -328,14 +381,44 @@ class TelemetryManager {
         telemetryLogger.logError(err as Error, { transactionId, chargeBoxId, operation: 'upsertTelemetryLatest' });
       }
 
-      // Publicar evento de telemetria via SSE
-      await publish({
-        type: 'telemetry.updated',
-        chargeBoxId,
+      // Montar payload normalizado para frontend
+      const connectorId = Number(payload.connectorId || 1);
+      const normalized: TelemetryData = {
+        chargePointId: chargeBoxId,
+        connectorId,
         transactionId,
-        telemetry: validatedData,
-        updatedAt: updatedAtISO,
-      });
+        timestampUtc: updatedAtISO,
+        context: 'Sample.Periodic',
+        batteryPercent: validatedData.soc_percent,
+        powerKW: validatedData.power_kw,
+        voltageV: validatedData.voltage_v !== undefined ? Math.round(validatedData.voltage_v) : undefined,
+        currentA: validatedData.current_a,
+        temperatureC: validatedData.temperature_c !== undefined ? Number(validatedData.temperature_c.toFixed ? (validatedData.temperature_c as any).toFixed(2) : validatedData.temperature_c) : undefined,
+        energyKWh: validatedData.energy_kwh,
+        durationMin: validatedData.duration_seconds !== undefined ? Math.round((validatedData.duration_seconds as number) / 60) : undefined,
+        source: 'live',
+      };
+
+      // Preço por kWh (cache/snapshot)
+      const price = await this.getPricePerKWh(chargeBoxId);
+      normalized.pricePerKWh = price;
+      normalized.totalCost = typeof normalized.energyKWh === 'number' ? Number((normalized.energyKWh * (price || 0)).toFixed(2)) : undefined;
+
+      // Fallback de valores ausentes baseado no último payload
+      const last = session.lastNormalized || {};
+      let reused = false;
+      const keys: (keyof TelemetryData)[] = ['batteryPercent','powerKW','voltageV','currentA','temperatureC','energyKWh'];
+      for (const k of keys) {
+        if (normalized[k] === undefined && last[k] !== undefined) {
+          normalized[k] = last[k] as any;
+          reused = true;
+        }
+      }
+      normalized.source = reused ? 'stale' : 'live';
+      session.lastNormalized = normalized;
+
+      // Publicar evento de telemetria via SSE
+      await publish({ type: 'telemetry.updated', chargeBoxId, transactionId, telemetry: normalized, updatedAt: updatedAtISO });
 
       // Log de sucesso
       const processingTime = Date.now() - startTime;
@@ -617,7 +700,41 @@ class TelemetryManager {
         telemetryLogger.logError(err as Error, { transactionId: tx, chargeBoxId, operation: 'upsertTelemetryLatest@TransactionEvent' });
       }
 
-      await publish({ type: 'telemetry.updated', chargeBoxId, transactionId: tx, telemetry: validated, updatedAt: updatedAtISO });
+      // Montar payload normalizado e publicar via SSE
+      const connectorId = Number(payload?.evse?.connectorId || 1);
+      const normalized: TelemetryData = {
+        chargePointId: chargeBoxId,
+        connectorId,
+        transactionId: tx,
+        timestampUtc: updatedAtISO,
+        context: payload?.eventType === 'Ended' ? 'Sample.Ended' : 'Sample.Periodic',
+        batteryPercent: validated.soc_percent,
+        powerKW: validated.power_kw,
+        voltageV: validated.voltage_v !== undefined ? Math.round(validated.voltage_v) : undefined,
+        currentA: validated.current_a,
+        temperatureC: validated.temperature_c !== undefined ? Number(validated.temperature_c.toFixed ? (validated.temperature_c as any).toFixed(2) : validated.temperature_c) : undefined,
+        energyKWh: validated.energy_kwh,
+        durationMin: validated.duration_seconds !== undefined ? Math.round((validated.duration_seconds as number) / 60) : undefined,
+        source: 'live',
+      };
+
+      const price = await this.getPricePerKWh(chargeBoxId);
+      normalized.pricePerKWh = price;
+      normalized.totalCost = typeof normalized.energyKWh === 'number' ? Number((normalized.energyKWh * (price || 0)).toFixed(2)) : undefined;
+
+      const last = session.lastNormalized || {};
+      let reused = false;
+      const keys: (keyof TelemetryData)[] = ['batteryPercent','powerKW','voltageV','currentA','temperatureC','energyKWh'];
+      for (const k of keys) {
+        if (normalized[k] === undefined && last[k] !== undefined) {
+          normalized[k] = last[k] as any;
+          reused = true;
+        }
+      }
+      normalized.source = reused ? 'stale' : 'live';
+      session.lastNormalized = normalized;
+
+      await publish({ type: 'telemetry.updated', chargeBoxId, transactionId: tx, telemetry: normalized, updatedAt: updatedAtISO });
     } catch (error) {
       telemetryLogger.logError(error as Error, { operation: 'processTransactionEvent' });
     }

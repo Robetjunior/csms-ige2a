@@ -9,14 +9,26 @@ export type BusEvent =
   | { type: 'heartbeat';      chargeBoxId: string; at: string }
   | { type: 'telemetry.updated'; chargeBoxId: string; transactionId: number; telemetry: TelemetryData; updatedAt: string };
 
+// Payload normalizado para o app (SSE)
 export type TelemetryData = {
-  power_kw?: number;           // Potência atual em kW
-  energy_kwh?: number;         // Energia acumulada em kWh
-  voltage_v?: number;          // Tensão em V
-  current_a?: number;          // Corrente em A
-  soc_percent?: number;        // Estado de carga em %
-  duration_seconds?: number;   // Duração da sessão em segundos
-  temperature_c?: number;      // Temperatura em °C
+  chargePointId: string;
+  connectorId: number;
+  transactionId: number | string;
+  timestampUtc: string; // ISO UTC
+  context: 'Sample.Periodic' | 'Transaction.Begin' | 'Transaction.End';
+  batteryPercent?: number; // SoC (inteiro)
+  powerKW?: number;        // 3 casas decimais
+  voltageV?: number;       // inteiro
+  currentA?: number;       // 2 casas decimais
+  temperatureC?: number;   // 2 casas decimais
+  energyKWh?: number;      // cumulativo ao vivo (3 casas)
+  meterStartKWh?: number;  // Begin
+  meterStopKWh?: number;   // End
+  energiaCarregadaKWh?: number; // End (stop-start)
+  durationMin?: number;    // corrente/ao finalizar
+  pricePerKWh?: number;    // do CSMS
+  totalCost?: number;      // energiaCarregadaKWh * pricePerKWh
+  source: 'live' | 'summary' | 'stale';
 };
 
 type OutEventName = 'session-start' | 'session-end' | 'status-change' | 'heartbeat' | 'telemetry-updated';

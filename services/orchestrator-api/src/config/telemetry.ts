@@ -6,9 +6,9 @@ export const TELEMETRY_CONFIG = {
   MAX_SESSIONS_MEMORY: Number(process.env.TELEMETRY_MAX_SESSIONS ?? '1000'),
   
   // Validação de dados
-  MAX_POWER_KW: Number(process.env.TELEMETRY_MAX_POWER_KW ?? '350'), // 350kW máximo típico para DC fast charging
-  MAX_VOLTAGE_V: Number(process.env.TELEMETRY_MAX_VOLTAGE_V ?? '1000'), // 1000V máximo
-  MAX_CURRENT_A: Number(process.env.TELEMETRY_MAX_CURRENT_A ?? '500'), // 500A máximo
+  MAX_POWER_KW: Number(process.env.TELEMETRY_MAX_POWER_KW ?? '50'), // Perfil padrão: até 50kW
+  MAX_VOLTAGE_V: Number(process.env.TELEMETRY_MAX_VOLTAGE_V ?? '260'), // 100–260V para AC
+  MAX_CURRENT_A: Number(process.env.TELEMETRY_MAX_CURRENT_A ?? '80'), // 0–80A
   MAX_TEMPERATURE_C: Number(process.env.TELEMETRY_MAX_TEMP_C ?? '80'), // 80°C máximo
   MIN_TEMPERATURE_C: Number(process.env.TELEMETRY_MIN_TEMP_C ?? '-40'), // -40°C mínimo
   
@@ -54,7 +54,7 @@ export function isValidPower(value: number): boolean {
 }
 
 export function isValidVoltage(value: number): boolean {
-  return Number.isFinite(value) && value >= 0 && value <= TELEMETRY_CONFIG.MAX_VOLTAGE_V;
+  return Number.isFinite(value) && value >= 100 && value <= TELEMETRY_CONFIG.MAX_VOLTAGE_V;
 }
 
 export function isValidCurrent(value: number): boolean {

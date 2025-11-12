@@ -5,6 +5,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 
 import {
   OCPP_SUBPROTOCOL,
+  OCPP_ACCEPTED_SUBPROTOCOLS,
   OCPP_PATH_PREFIX,
   OCPP_PING_MS,
   OCPP_CALL_TIMEOUT_MS,
@@ -42,8 +43,11 @@ export class OcppCsms extends EventEmitter {
     this.wss = new WebSocketServer({
       noServer: true,
       handleProtocols: (protocols: Set<string>) => {
-        const accepted = protocols.has(OCPP_SUBPROTOCOL) ? OCPP_SUBPROTOCOL : false;
-        console.log(`[OCPP DEBUG] handleProtocols requested=${Array.from(protocols).join(', ') || '(none)'} accepted=${accepted || '(none)'}`);
+        // Accept either ocpp1.6 or ocpp1.6j; prefer what the client requested
+        const requested = Array.from(protocols);
+        const match = requested.find(p => OCPP_ACCEPTED_SUBPROTOCOLS.includes(p as any));
+        const accepted = match || (protocols.has(OCPP_SUBPROTOCOL) ? OCPP_SUBPROTOCOL : false);
+        console.log(`[OCPP DEBUG] handleProtocols requested=${requested.join(', ') || '(none)'} accepted=${accepted || '(none)'}`);
         return accepted;
       },
     });
