@@ -94,6 +94,7 @@ class TelemetryManager {
       chargeBoxId: params.chargeBoxId,
       startedAt: params.startedAt,
       meterStartWh: params.meterStartWh,
+      lastMeterWh: params.meterStartWh,
       idTag: params.idTag,
     };
     
@@ -411,9 +412,14 @@ class TelemetryManager {
         }
       }
 
-      // Energia acumulada (kWh) a partir do último Wh
+      // Energia acumulada (kWh) a partir do último Wh, garantindo monotonicidade
       if (typeof energyWhLatest === 'number' && Number.isFinite(energyWhLatest)) {
-        const energyKwh = Math.max(0, (energyWhLatest - session.meterStartWh) / 1000);
+        const prevWh = typeof session.lastMeterWh === 'number' && Number.isFinite(session.lastMeterWh)
+          ? session.lastMeterWh!
+          : session.meterStartWh;
+        const monotonicWh = energyWhLatest < prevWh ? prevWh : energyWhLatest;
+        session.lastMeterWh = monotonicWh;
+        const energyKwh = Math.max(0, (monotonicWh - session.meterStartWh) / 1000);
         telemetry.energy_kwh = Number(energyKwh.toFixed(3));
       }
 
@@ -516,7 +522,13 @@ class TelemetryManager {
       // totalEnergyConsumed (Wh) — fonte preferencial
       const totalEnergyConsumed = Number(payload?.transactionInfo?.totalEnergyConsumed ?? NaN);
       if (Number.isFinite(totalEnergyConsumed)) {
-        const energyKwh = Math.max(0, totalEnergyConsumed / 1000);
+        // Atualiza lastMeterWh garantindo monotonicidade
+        const prevWh = typeof session.lastMeterWh === 'number' && Number.isFinite(session.lastMeterWh)
+          ? session.lastMeterWh!
+          : session.meterStartWh;
+        const monotonicWh = totalEnergyConsumed < prevWh ? prevWh : totalEnergyConsumed;
+        session.lastMeterWh = monotonicWh;
+        const energyKwh = Math.max(0, monotonicWh / 1000);
         telemetry.energy_kwh = Number(energyKwh.toFixed(3));
       }
 
@@ -544,7 +556,12 @@ class TelemetryManager {
           } else if (/Temperature/i.test(meas)) {
             telemetry.temperature_c = Number(val.toFixed(1));
           } else if (!meas || /Energy\.Active\.Import\.Register/i.test(meas)) {
-            const energyKwh = Math.max(0, (val - session.meterStartWh) / 1000);
+            const prevWh = typeof session.lastMeterWh === 'number' && Number.isFinite(session.lastMeterWh)
+              ? session.lastMeterWh!
+              : session.meterStartWh;
+            const monotonicWh = val < prevWh ? prevWh : val;
+            session.lastMeterWh = monotonicWh;
+            const energyKwh = Math.max(0, (monotonicWh - session.meterStartWh) / 1000);
             telemetry.energy_kwh = Number(energyKwh.toFixed(3));
           }
         }

@@ -1,7 +1,7 @@
 // src/config/telemetry.ts
 export const TELEMETRY_CONFIG = {
   // Throttling e performance
-  THROTTLE_INTERVAL_MS: Number(process.env.TELEMETRY_THROTTLE_MS ?? '7000'),
+  THROTTLE_INTERVAL_MS: Number(process.env.TELEMETRY_THROTTLE_MS ?? '5000'),
   MIN_UPDATE_INTERVAL_MS: Number(process.env.TELEMETRY_MIN_UPDATE_MS ?? '5000'),
   MAX_SESSIONS_MEMORY: Number(process.env.TELEMETRY_MAX_SESSIONS ?? '1000'),
   
