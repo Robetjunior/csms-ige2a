@@ -74,8 +74,8 @@ class TelemetryManager {
   }
   
   // Configurações
-  private readonly THROTTLE_INTERVAL_MS = Number(process.env.TELEMETRY_THROTTLE_MS ?? '7000'); // 7 segundos padrão
-  private readonly MIN_UPDATE_INTERVAL_MS = 5000; // Mínimo 5 segundos entre atualizações
+  private readonly THROTTLE_INTERVAL_MS = Number(process.env.TELEMETRY_THROTTLE_MS ?? '5000'); // 5s padrão (alinha ao simulador)
+  private readonly MIN_UPDATE_INTERVAL_MS = 3000; // Permite modo rápido (~3s)
 
   /* ============================ Gerenciamento de Sessões ============================ */
   
