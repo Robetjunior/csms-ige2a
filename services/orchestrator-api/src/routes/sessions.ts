@@ -63,8 +63,8 @@ function extractTelemetryFromMeterValuesPayload(p: any): { wh?: number; soc?: nu
           // unidades comuns: Celsius
           temperature_c = Number(val.toFixed(1));
         }
-        // Estado de carga (%)
-        if (/^SoC$/i.test(meas)) {
+        // Estado de carga (%) — suportar variações de measurand
+        if (/(^SoC$)|StateOfCharge|Battery\.SoC/i.test(meas)) {
           // unidades comuns: Percent
           soc = Math.round(val);
         }

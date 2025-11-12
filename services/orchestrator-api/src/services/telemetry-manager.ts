@@ -400,8 +400,8 @@ class TelemetryManager {
             currentAByPhase[key] = (currentAByPhase[key] || 0) + value;
           }
           
-          // Estado de carga (%)
-          else if (/^SoC$/i.test(measurand)) {
+          // Estado de carga (%) — suportar variações de measurand
+          else if (/(^SoC$)|StateOfCharge|Battery\.SoC/i.test(measurand)) {
             telemetry.soc_percent = Math.round(value);
           }
           
@@ -551,7 +551,7 @@ class TelemetryManager {
           } else if (/Current\.Import/i.test(meas) || /^Current$/i.test(meas)) {
             const key = phase || 'total';
             currentAByPhase[key] = (currentAByPhase[key] || 0) + val;
-          } else if (/^SoC$/i.test(meas)) {
+          } else if (/(^SoC$)|StateOfCharge|Battery\.SoC/i.test(meas)) {
             telemetry.soc_percent = Math.round(val);
           } else if (/Temperature/i.test(meas)) {
             telemetry.temperature_c = Number(val.toFixed(1));

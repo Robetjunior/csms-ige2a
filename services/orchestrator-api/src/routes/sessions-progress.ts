@@ -25,7 +25,8 @@ function extractTelemetry(p: any): { wh?: number; soc?: number; power_kw?: numbe
         if (/Voltage/i.test(meas)) voltage_v = Number(val.toFixed(2));
         if (/Current\.(Import|Export)/i.test(meas) || /^Current$/i.test(meas)) current_a = Number(val.toFixed(2));
         if (/Temperature/i.test(meas)) temperature_c = Number(val.toFixed(1));
-        if (/^SoC$/i.test(meas)) soc = Math.round(val);
+        // SoC (%) — suportar variações de measurand
+        if (/(^SoC$)|StateOfCharge|Battery\.SoC/i.test(meas)) soc = Math.round(val);
       }
     }
     return { wh, soc, power_kw, voltage_v, current_a, temperature_c };
