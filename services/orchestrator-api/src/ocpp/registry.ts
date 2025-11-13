@@ -20,6 +20,7 @@ export class ConnectionRegistry {
   // Status e heartbeat em memória (debug)
   private connector = new Map<CbId, Map<number, ConnectorState>>();
   private lastHeartbeat = new Map<CbId, string>();
+  private heartbeatInterval = new Map<CbId, number>();
 
   /* ========== Peers (WS) ========== */
   setPeer(cbid: CbId, ws: WebSocket) { this.peers.set(cbid, ws); }
@@ -88,9 +89,17 @@ export class ConnectionRegistry {
       chargeBoxId: cbid,
       online: this.isOnline(cbid),
       lastHeartbeat: this.getHeartbeat(cbid) ?? null,
+      heartbeatInterval: this.heartbeatInterval.get(cbid) ?? null,
       connectors: this.getConnectorStatuses(cbid),
       lastTransactionId: this.getLastTxForChargeBox(cbid) ?? null,
     };
+  }
+
+  setHeartbeatInterval(cbid: CbId, intervalSec: number) {
+    if (Number.isFinite(intervalSec) && intervalSec > 0) this.heartbeatInterval.set(cbid, intervalSec);
+  }
+  getHeartbeatInterval(cbid: CbId): number | undefined {
+    return this.heartbeatInterval.get(cbid);
   }
 }
 

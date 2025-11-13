@@ -247,12 +247,7 @@ router.post('/remoteStart', async (req: Request, res: Response) => {
       message: 'RemoteStart enviado ao CP conectado ao nosso CSMS.',
     });
   } catch (e: any) {
-    return res.status(409).json({
-      commandId: cmdId!,
-      status: 'pending',
-      error: e?.message || 'charge_point_offline',
-      detail: e?.message || 'CP não conectado ao nosso CSMS',
-    });
+    return res.status(409).json({ commandId: cmdId!, status: 'pending', error: 'charge_point_offline', detail: e?.message || 'charge_point_offline' });
   }
 });
 
@@ -632,3 +627,24 @@ router.post('/getDiagnostics', async (req: Request, res: Response) => {
 });
 
 export default router;
+  const snapshot = csms.getStatusSnapshot(chargeBoxId);
+  const hbIso = csms.getLastHeartbeat(chargeBoxId);
+  const hbInterval = csms.getHeartbeatInterval(chargeBoxId) ?? 0;
+  const now = Date.now();
+  const hbAge = hbIso ? Math.max(0, now - new Date(hbIso).getTime()) : Infinity;
+  const hbMax = hbInterval > 0 ? hbInterval * 2000 : 90000;
+  const online = snapshot.online && hbAge <= hbMax;
+  const statuses = csms.getConnectorStatuses(chargeBoxId);
+  const targetConnector = typeof connectorId === 'number' ? connectorId : 1;
+  const connState = statuses.find(s => s.connectorId === targetConnector)?.status || 'Unknown';
+  const txActive = typeof csms.getLastTxForChargeBox(chargeBoxId) === 'number';
+
+  if (!online) {
+    return res.status(409).json({ error: 'gating_blocked', reason: 'offline_or_heartbeat_expired', detail: { online: snapshot.online, hbAgeMs: hbAge, hbIntervalSec: hbInterval } });
+  }
+  if (String(connState).toLowerCase() !== 'available') {
+    return res.status(409).json({ error: 'gating_blocked', reason: 'connector_not_available', detail: { connectorId: targetConnector, status: connState } });
+  }
+  if (txActive) {
+    return res.status(409).json({ error: 'gating_blocked', reason: 'transaction_active' });
+  }

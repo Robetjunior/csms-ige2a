@@ -21,6 +21,7 @@ import {
 } from '../services/repo';
 import { publish } from '../routes/stream';
 import { telemetryManager } from '../services/telemetry-manager';
+import { pg } from '../db';
 
 type Pending = { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout };
 
@@ -37,6 +38,7 @@ export class OcppCsms extends EventEmitter {
   getLastHeartbeat(cbid: string) { return this.registry.getLastHeartbeat(cbid); }
   listOnline(): string[] { return this.registry.listPeers(); }
   getStatusSnapshot(cbid: string) { return this.registry.getStatusSnapshot(cbid); }
+  getHeartbeatInterval(cbid: string) { return this.registry.getHeartbeatInterval(cbid); }
 
   /** Sobe o servidor OCPP sobre o mesmo HTTP server do Express */
   start(server: http.Server) {
@@ -160,6 +162,15 @@ export class OcppCsms extends EventEmitter {
       clearInterval(iv);
       this.registry.delPeer(chargeBoxId);
       console.log(`[OCPP] CP disconnected: ${chargeBoxId}`);
+      try {
+        const current = this.registry.getConnectorStatuses(chargeBoxId);
+        const now = new Date().toISOString();
+        for (const c of current) {
+          this.registry.setConnectorStatus(chargeBoxId, c.connectorId, 'Unknown', c.errorCode, now);
+          try { publish({ type: 'status.changed', chargeBoxId, connectorId: c.connectorId, status: 'Unknown', updatedAt: now }); } catch {}
+        }
+      } catch {}
+      try { pg.query(`UPDATE orchestrator.commands SET status='failed', updated_at=now() WHERE charge_box_id=$1 AND command_type='RemoteStart' AND status IN ('pending','sent')`, [chargeBoxId]); } catch {}
     });
 
     ws.on('message', async (raw: Buffer) => {
@@ -211,8 +222,9 @@ export class OcppCsms extends EventEmitter {
     try {
       switch (action) {
         case 'BootNotification': {
-          // aceita o boot e define intervalo de heartbeat
           ok({ status: 'Accepted', currentTime: new Date().toISOString(), interval: 180 });
+          try { this.registry.setHeartbeatInterval(chargeBoxId, 180); } catch {}
+          try { this.registry.setHeartbeat(chargeBoxId); } catch {}
 
           // (opcional) provisionamento leve do charge box no banco poderia entrar aqui
 
