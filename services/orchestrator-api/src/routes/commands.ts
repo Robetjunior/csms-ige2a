@@ -582,12 +582,12 @@ router.post('/getDiagnostics', async (req: Request, res: Response) => {
       details: parsed.error.issues.map(i => ({ path: i.path, message: i.message })),
     });
   }
-  const { chargeBoxId, location, retries, retryInterval, startTime, stopTime } = parsed.data;
+  const { chargeBoxId: cbId, location, retries, retryInterval, startTime, stopTime } = parsed.data;
 
   // registra comando
   const ins = await sb.from('commands').insert({
     command_type: 'GetDiagnostics',
-    charge_box_id: chargeBoxId,
+    charge_box_id: cbId,
     status: 'pending',
     requested_by: 'api',
     payload: { location, retries, retryInterval, startTime, stopTime }
@@ -599,7 +599,7 @@ router.post('/getDiagnostics', async (req: Request, res: Response) => {
   try {
     // Simular resposta de diagnósticos (em um sistema real, isso viria do CSMS)
     const mockDiagnostics = {
-      fileName: `diagnostics_${chargeBoxId}_${new Date().toISOString().split('T')[0]}.log`,
+      fileName: `diagnostics_${cbId}_${new Date().toISOString().split('T')[0]}.log`,
       status: 'Accepted'
     };
 
@@ -627,24 +627,3 @@ router.post('/getDiagnostics', async (req: Request, res: Response) => {
 });
 
 export default router;
-  const snapshot = csms.getStatusSnapshot(chargeBoxId);
-  const hbIso = csms.getLastHeartbeat(chargeBoxId);
-  const hbInterval = csms.getHeartbeatInterval(chargeBoxId) ?? 0;
-  const now = Date.now();
-  const hbAge = hbIso ? Math.max(0, now - new Date(hbIso).getTime()) : Infinity;
-  const hbMax = hbInterval > 0 ? hbInterval * 2000 : 90000;
-  const online = snapshot.online && hbAge <= hbMax;
-  const statuses = csms.getConnectorStatuses(chargeBoxId);
-  const targetConnector = typeof connectorId === 'number' ? connectorId : 1;
-  const connState = statuses.find(s => s.connectorId === targetConnector)?.status || 'Unknown';
-  const txActive = typeof csms.getLastTxForChargeBox(chargeBoxId) === 'number';
-
-  if (!online) {
-    return res.status(409).json({ error: 'gating_blocked', reason: 'offline_or_heartbeat_expired', detail: { online: snapshot.online, hbAgeMs: hbAge, hbIntervalSec: hbInterval } });
-  }
-  if (String(connState).toLowerCase() !== 'available') {
-    return res.status(409).json({ error: 'gating_blocked', reason: 'connector_not_available', detail: { connectorId: targetConnector, status: connState } });
-  }
-  if (txActive) {
-    return res.status(409).json({ error: 'gating_blocked', reason: 'transaction_active' });
-  }
