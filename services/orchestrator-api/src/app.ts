@@ -1,6 +1,7 @@
 // src/app.ts
 import express, { Request, Response } from 'express';
 import path from 'path';
+import fs from 'fs';
 import swaggerUi from 'swagger-ui-express';
 
 import eventsRouter from './routes/events';
@@ -40,14 +41,16 @@ app.get('/metrics', metricsHandler);
 
 // ---- DOCS ----
 const OPENAPI_FILE = path.resolve(process.cwd(), 'openapi.yaml');
-const DOCS_ENABLED = (process.env.ENABLE_DOCS ?? '1') !== '0';
+const HAS_OPENAPI = fs.existsSync(OPENAPI_FILE);
+const DOCS_ENABLED = ((process.env.ENABLE_DOCS ?? '1') !== '0') && HAS_OPENAPI;
 
 if (DOCS_ENABLED) {
   app.get('/openapi.yaml', (_req, res) => {
     res.type('text/yaml').sendFile(OPENAPI_FILE);
   });
 } else {
-  console.warn('[docs] desabilitado (ENABLE_DOCS=0)');
+  const reason = !HAS_OPENAPI ? 'arquivo openapi.yaml ausente' : 'variável ENABLE_DOCS=0';
+  console.warn(`[docs] desabilitado (${reason})`);
 }
 
 // ---- Rotas públicas (se quiser proteger, mova após o middleware de auth) ----
