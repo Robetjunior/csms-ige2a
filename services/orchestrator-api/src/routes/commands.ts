@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { sb } from '../../supabase';
 import { csms } from '../ocpp/csms';
 import { pg } from '../db';
+import { stopSession, completeRemoteStopForTx } from '../services/repo';
 
 const router = Router();
 const hasSupabase = !!sb;
@@ -286,7 +287,7 @@ router.post('/remoteStop', async (req: Request, res: Response) => {
     let existingRow: any | null = null;
     try {
       const r = await pg.query(
-        `SELECT id, status
+        `SELECT id, status, created_at, updated_at
            FROM orchestrator.commands
           WHERE command_type = 'RemoteStop'
             AND transaction_id = $1
@@ -316,7 +317,35 @@ router.post('/remoteStop', async (req: Request, res: Response) => {
       }
     }
     if (existingRow) {
-      const row = existingRow;
+      const row = existingRow as { id: number; status: string; created_at?: string; updated_at?: string };
+      const lastTs = new Date(row.updated_at || row.created_at || new Date()).getTime();
+      const ageMs = Date.now() - lastTs;
+      const RESEND_OLDER_THAN_MS = 15000;
+      const FORCE_CLOSE_OLDER_THAN_MS = 60000;
+
+      if (['pending','sent'].includes(row.status) && ageMs > RESEND_OLDER_THAN_MS) {
+        try {
+          await csms.remoteStop(tx, chargeBoxId!);
+          try {
+            await pg.query(`UPDATE orchestrator.commands SET status='sent', updated_at=now() WHERE id=$1`, [row.id]);
+          } catch {}
+          return res.status(202).json({ commandId: row.id, status: 'sent', idempotentDuplicate: true, resent: true });
+        } catch (e:any) {
+          return res.status(409).json({ commandId: row.id, status: 'pending', idempotentDuplicate: true, error: e?.message || 'charge_point_offline', detail: e?.message || 'charge_point_offline' });
+        }
+      }
+
+      if (['sent','accepted'].includes(row.status) && ageMs > FORCE_CLOSE_OLDER_THAN_MS) {
+        try {
+          await stopSession({ transactionId: tx, stoppedAt: new Date(), stopReason: 'ForceClose' });
+          try { await completeRemoteStopForTx({ transactionId: tx, response: { forceClose: true } }); } catch {}
+          try { await pg.query(`UPDATE orchestrator.commands SET status='completed', response=COALESCE(response,'{}'::jsonb) || '{"forceClose":true}'::jsonb, updated_at=now() WHERE id=$1`, [row.id]); } catch {}
+          return res.status(200).json({ commandId: row.id, status: 'completed', idempotentDuplicate: true, forceClose: true });
+        } catch (e:any) {
+          return res.status(500).json({ commandId: row.id, status: row.status, idempotentDuplicate: true, error: e?.message || 'force_close_failed' });
+        }
+      }
+
       return res.status(200).json({ commandId: row.id, status: row.status, idempotentDuplicate: true });
     }
 
