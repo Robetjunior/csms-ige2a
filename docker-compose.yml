@@ -47,6 +47,8 @@ services:
     mem_limit: 256m
     cpus: 1.0
 
+  # mobile service removido: o app tem repositório próprio e não deve subir via compose deste repo
+
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.47.2
     container_name: csms_cadvisor
