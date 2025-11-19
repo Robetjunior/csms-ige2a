@@ -207,8 +207,8 @@ export async function stopSession(args: {
   const { transactionId, stoppedAt, stopReason } = args;
   const sql = `
     UPDATE orchestrator.sessions
-       SET stopped_at = COALESCE($2, stopped_at),
-           stop_reason = COALESCE($3, stop_reason)
+       SET stopped_at = COALESCE(stopped_at, $2),
+           stop_reason = COALESCE(stop_reason, $3)
      WHERE transaction_id = $1;
   `;
   await pg.query(sql, [
