@@ -428,6 +428,45 @@ router.get('/active/:chargeBoxId', async (req: Request, res: Response) => {
   }
 });
 
+router.get('/admin/:chargeBoxId/active', async (req: Request, res: Response) => {
+  try {
+    const chargeBoxId = String(req.params.chargeBoxId || '').trim();
+    if (!chargeBoxId) return res.status(400).json({ error: 'invalid_charge_box_id' });
+
+    const r = await pg.query<{
+      transaction_id: number;
+      charge_box_id: string;
+      id_tag: string | null;
+      started_at: string;
+      stopped_at: string | null;
+      stop_reason: string | null;
+    }>(
+      `SELECT transaction_id, charge_box_id, id_tag, started_at, stopped_at, stop_reason
+         FROM orchestrator.sessions
+        WHERE charge_box_id = $1 AND stopped_at IS NULL
+        ORDER BY id DESC
+        LIMIT 1`,
+      [chargeBoxId]
+    );
+
+    if (r.rowCount === 0) return res.status(404).json({ error: 'not_found' });
+
+    const s = r.rows[0] as any;
+    const duration_seconds = Math.floor((Date.now() - new Date(s.started_at).getTime())/1000);
+    return res.json({
+      transaction_id: Number(s.transaction_id),
+      charge_box_id: s.charge_box_id,
+      id_tag: s.id_tag,
+      started_at: s.started_at,
+      status: 'active',
+      duration_seconds,
+    });
+  } catch (err:any) {
+    console.error('[GET /v1/sessions/admin/:chargeBoxId/active] error:', err);
+    return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
 /**
  * GET /v1/sessions/active/:chargeBoxId/detail
  * Retorna detalhes da sessão ativa de um carregador específico, incluindo telemetria
