@@ -2,6 +2,8 @@ import { Router, Request, Response } from 'express';
 import { sb } from '../../supabase';
 import { z } from 'zod';
 import { pg } from '../db';
+import { csms } from '../ocpp/csms';
+import { stopSession } from '../services/repo';
 
 const router = Router();
 
@@ -389,6 +391,11 @@ router.get('/active/:chargeBoxId', async (req: Request, res: Response) => {
       if (r.rowCount === 0) return res.json({ session: null });
 
       const s = r.rows[0] as any;
+      const snap = csms.getStatusSnapshot(chargeBoxId);
+      if (String(snap.connectors?.[0]?.status || '').toLowerCase() === 'available') {
+        try { await stopSession({ transactionId: Number(s.transaction_id), stoppedAt: new Date(), stopReason: 'StatusAvailableCleanup' }); } catch {}
+        return res.json({ session: null });
+      }
       const duration_seconds = Math.floor((new Date().getTime() - new Date(s.started_at).getTime())/1000);
 
       return res.json({ 
@@ -412,6 +419,11 @@ router.get('/active/:chargeBoxId', async (req: Request, res: Response) => {
       if (r2.error) return res.status(500).json({ error: 'query_error', detail: r2.error.message });
       if (!r2.data) return res.json({ session: null });
       const s: any = r2.data;
+      const snap = csms.getStatusSnapshot(chargeBoxId);
+      if (String(snap.connectors?.[0]?.status || '').toLowerCase() === 'available') {
+        try { await stopSession({ transactionId: Number(s.transaction_id), stoppedAt: new Date(), stopReason: 'StatusAvailableCleanup' }); } catch {}
+        return res.json({ session: null });
+      }
       const duration_seconds = Math.floor((Date.now() - new Date(s.started_at).getTime())/1000);
       return res.json({
         session: {
@@ -499,6 +511,11 @@ router.get('/active/:chargeBoxId/detail', async (req: Request, res: Response) =>
       );
       if (r.rowCount === 0) return res.json({ session: null, telemetry: null });
       s = r.rows[0] as any;
+      const snap = csms.getStatusSnapshot(chargeBoxId);
+      if (String(snap.connectors?.[0]?.status || '').toLowerCase() === 'available') {
+        try { await stopSession({ transactionId: Number(s.transaction_id), stoppedAt: new Date(), stopReason: 'StatusAvailableCleanup' }); } catch {}
+        return res.json({ session: null, telemetry: null });
+      }
     } catch {
       // Fallback via Supabase REST (cert válido) apenas para a sessão
       if (!sb) throw new Error('db_unavailable');
@@ -513,6 +530,11 @@ router.get('/active/:chargeBoxId/detail', async (req: Request, res: Response) =>
       if (r2.error) return res.status(500).json({ error: 'query_error', detail: r2.error.message });
       if (!r2.data) return res.json({ session: null, telemetry: null });
       s = r2.data as any;
+      const snap = csms.getStatusSnapshot(chargeBoxId);
+      if (String(snap.connectors?.[0]?.status || '').toLowerCase() === 'available') {
+        try { await stopSession({ transactionId: Number(s.transaction_id), stoppedAt: new Date(), stopReason: 'StatusAvailableCleanup' }); } catch {}
+        return res.json({ session: null, telemetry: null });
+      }
     }
     tx = Number(s.transaction_id);
     duration_seconds = Math.max(0, Math.floor((Date.now() - new Date(s.started_at).getTime()) / 1000));

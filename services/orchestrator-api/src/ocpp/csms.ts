@@ -213,6 +213,31 @@ export class OcppCsms extends EventEmitter {
     } catch (e:any) {
       console.warn('[OCPP] publish status.changed falhou:', e?.message || e);
     }
+
+    if (String(status).toLowerCase() === 'available') {
+      (async () => {
+        try {
+          const r = await pg.query<{ transaction_id: number }>(
+            `SELECT transaction_id
+               FROM orchestrator.sessions
+              WHERE charge_box_id = $1 AND stopped_at IS NULL
+              ORDER BY id DESC
+              LIMIT 1`,
+            [chargeBoxId]
+          );
+          if (r.rowCount > 0) {
+            const tx = Number(r.rows[0].transaction_id);
+            try {
+              await stopSession({ transactionId: tx, stoppedAt: new Date(at), stopReason: 'StatusAvailableCleanup' });
+            } catch (e:any) {
+              console.warn('[OCPP] stopSession@AvailableCleanup falhou:', e?.message || e);
+            }
+          }
+        } catch (e:any) {
+          console.warn('[OCPP] query active session on Available falhou:', e?.message || e);
+        }
+      })();
+    }
   }
 
   private async handleCall(ws: WebSocket, chargeBoxId: string, uid: string, action: string, p: any) {
