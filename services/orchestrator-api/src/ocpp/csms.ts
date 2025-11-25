@@ -291,32 +291,8 @@ export class OcppCsms extends EventEmitter {
         }
 
         case 'StartTransaction': {
-          const startedAt = p?.timestamp ? new Date(p.timestamp) : new Date();
-          const connectorId = Number(p?.connectorId) || 1;
-          const idTag = p?.idTag ?? null;
-          const meterStartWh = Number(p?.meterStart ?? 0);
-          let transactionId = Math.floor(Date.now() / 1000) % 1_000_000_000;
-          if (transactionId <= 0) transactionId = 1;
-
-          this.registry.bindTx(transactionId, chargeBoxId);
-          try { console.log(`[OCPP-CSMS] StartTransaction.conf transactionId=${transactionId}`); } catch {}
-          ok({ transactionId, transaction_id: transactionId, idTagInfo: { status: 'Accepted' } });
-
-          try {
-            await upsertSessionStart({ transactionId, chargeBoxId, idTag, startedAt, connectorId, mode: null });
-            telemetryManager.startSession({ transactionId, chargeBoxId, startedAt, meterStartWh, idTag });
-            try { console.log(`[OCPP-CSMS] Session.created chargeBoxId=${chargeBoxId} transaction_id=${transactionId}`); } catch {}
-          } catch (e:any) { console.warn('[OCPP] upsertSessionStart falhou:', e?.message || e); }
-
-          try {
-            await insertEvento({ tipo: 'StartTransaction', payload: { ...p, transactionId }, chargeBoxId, idTag, transactionId });
-          } catch (e:any) { console.warn('[OCPP] insertEvento StartTransaction falhou:', e?.message || e); }
-
-          try {
-            publish({ type: 'session.started', chargeBoxId, transactionId, idTag, startedAt: startedAt.toISOString() });
-          } catch (e:any) { console.warn('[OCPP] publish session.started falhou:', e?.message || e); }
-
-          this.emitStatusChanged(chargeBoxId, connectorId, 'Charging', startedAt.toISOString());
+          const result = await this.handleStartTransaction(chargeBoxId, p);
+          ok(result);
           return;
         }
 
@@ -541,6 +517,25 @@ export class OcppCsms extends EventEmitter {
         chargeBoxId, action, err: err?.message || err
       });
     }
+  }
+
+  private async handleStartTransaction(chargeBoxId: string, p: any) {
+    const startedAt = p?.timestamp ? new Date(p.timestamp) : new Date();
+    const connectorId = Number(p?.connectorId) || 1;
+    const idTag = p?.idTag ?? null;
+    const meterStartWh = Number(p?.meterStart ?? 0);
+    let transactionId = Math.floor(Date.now() / 1000) % 1_000_000_000;
+    if (transactionId <= 0) transactionId = 1;
+
+    this.registry.bindTx(transactionId, chargeBoxId);
+    try { console.log('[OCPP-CSMS] StartTransaction.session.created', { chargeBoxId, transaction_id: transactionId }); } catch {}
+    try { await upsertSessionStart({ transactionId, chargeBoxId, idTag, startedAt, connectorId, mode: null }); } catch (e:any) { console.warn('[OCPP] upsertSessionStart falhou:', e?.message || e); }
+    try { telemetryManager.startSession({ transactionId, chargeBoxId, startedAt, meterStartWh, idTag }); } catch (e:any) { console.warn('[OCPP] telemetryManager.startSession falhou:', e?.message || e); }
+    try { await insertEvento({ tipo: 'StartTransaction', payload: { ...p, transactionId }, chargeBoxId, idTag, transactionId }); } catch (e:any) { console.warn('[OCPP] insertEvento StartTransaction falhou:', e?.message || e); }
+    try { publish({ type: 'session.started', chargeBoxId, transactionId, idTag, startedAt: startedAt.toISOString() }); } catch (e:any) { console.warn('[OCPP] publish session.started falhou:', e?.message || e); }
+    this.emitStatusChanged(chargeBoxId, connectorId, 'Charging', startedAt.toISOString());
+    try { console.log('[OCPP-CSMS] StartTransaction.conf', { chargeBoxId, transactionId }); } catch {}
+    return { transactionId, transaction_id: transactionId, idTagInfo: { status: 'Accepted' } };
   }
 
 

@@ -512,7 +512,7 @@ router.get('/active/:chargeBoxId/detail', async (req: Request, res: Response) =>
       if (r.rowCount === 0) return res.json({ session: null, telemetry: null });
       s = r.rows[0] as any;
       const snap = csms.getStatusSnapshot(chargeBoxId);
-      try { console.log(`[OCPP-CSMS] Session.active.detail chargeBoxId=${chargeBoxId} transaction_id=${Number(s.transaction_id)} state=charging`); } catch {}
+      try { console.log('[OCPP-CSMS] Session.active.detail', { chargeBoxId, transaction_id: Number(s.transaction_id), state: 'charging' }); } catch {}
     } catch {
       // Fallback via Supabase REST (cert válido) apenas para a sessão
       if (!sb) throw new Error('db_unavailable');
@@ -528,7 +528,7 @@ router.get('/active/:chargeBoxId/detail', async (req: Request, res: Response) =>
       if (!r2.data) return res.json({ session: null, telemetry: null });
       s = r2.data as any;
       const snap = csms.getStatusSnapshot(chargeBoxId);
-      try { console.log(`[OCPP-CSMS] Session.active.detail chargeBoxId=${chargeBoxId} transaction_id=${Number(s.transaction_id)} state=charging`); } catch {}
+      try { console.log('[OCPP-CSMS] Session.active.detail', { chargeBoxId, transaction_id: Number(s.transaction_id), state: 'charging' }); } catch {}
     }
     tx = Number(s.transaction_id);
     duration_seconds = Math.max(0, Math.floor((Date.now() - new Date(s.started_at).getTime()) / 1000));
@@ -621,7 +621,7 @@ router.get('/active/:chargeBoxId/detail', async (req: Request, res: Response) =>
       isActive: true,
     };
 
-    try { console.log(`[OCPP-CSMS] Session.active.detail chargeBoxId=${chargeBoxId} transaction_id=${tx} state=charging`); } catch {}
+    try { console.log('[OCPP-CSMS] Session.active.detail', { chargeBoxId, transaction_id: tx, state: 'charging' }); } catch {}
     return res.json({ session, telemetry });
   } catch (err: any) {
     console.error('[GET /v1/sessions/active/:chargeBoxId/detail] error:', err);

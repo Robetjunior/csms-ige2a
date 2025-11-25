@@ -127,4 +127,37 @@ if ($online) {
   Write-Line ("chargers.online.sample=" + ($sampleIds -join ','))
 } else { Write-Line "chargers.online=unavailable" }
 
+Write-Line "== RemoteStop =="
+if ($txId) {
+  $bodyStop = @{ transactionId = $txId; chargeBoxId = $ChargeBoxId } | ConvertTo-Json
+  try {
+    $resStop = Invoke-RestMethod -Method Post -Uri "$BaseUrl/v1/commands/remoteStop" -Headers $headers -Body $bodyStop
+    Write-Line ("remoteStop.status=" + $resStop.status)
+    Write-Line ("remoteStop.commandId=" + $resStop.commandId)
+  } catch {
+    $raw = $_.ErrorDetails.Message
+    if ($raw) { Write-Line ("remoteStop.error=" + $raw) } else { Write-Line ("remoteStop.error=$($_.Exception.Message)") }
+  }
+} else {
+  Write-Line "remoteStop.skipped=txId-not-found"
+}
+
+Write-Line "== Eventos StopTransaction =="
+if ($txId) {
+  try {
+    $evStop = Invoke-RestMethod -Method Get -Uri "$BaseUrl/v1/events?event_type=StopTransaction&transaction_pk=$txId&limit=5&sort=desc" -Headers $headers
+    if ($evStop) {
+      if (-not ($evStop -is [System.Array])) { $evStop = @($evStop) }
+      $count2 = ($evStop | Measure-Object).Count
+      Write-Line ("events.stop.count=" + $count2)
+      foreach ($ev in $evStop) {
+        $ts2 = ($ev.created_at, $ev.timestamp, $ev.at, $ev.time) | Where-Object { $_ } | Select-Object -First 1
+        Write-Line ("- stop.ts=" + ($ts2))
+      }
+    } else {
+      Write-Line "events.stop=unavailable"
+    }
+  } catch { Write-Line "events.stop.error=$($_.Exception.Message)" }
+}
+
 Write-Line "== Fim =="
