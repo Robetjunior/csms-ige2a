@@ -2,6 +2,7 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { sb } from '../../supabase';
+import { listEvents } from '../services/repo';
 
 const router = Router();
 
@@ -77,29 +78,22 @@ router.get('/', async (req: Request, res: Response) => {
 
     const parsedLimit = Math.min(Math.max(parseInt(String(limit), 10) || 50, 1), 500);
     const parsedOffset = Math.max(parseInt(String(offset), 10) || 0, 0);
-    const orderAsc = (sort || 'desc').toLowerCase() === 'asc';
+    const orderSort: 'asc' | 'desc' = (sort || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
 
-    // Consultar diretamente a tabela base ocpp_events e alias transaction_id -> transaction_pk
-    let qry = sb
-      .from('ocpp_events')
-      .select('id, created_at, event_type, charge_box_id, transaction_id:transaction_pk, id_tag, payload', { count: 'exact' })
-      .order('created_at', { ascending: orderAsc })
-      .range(parsedOffset, parsedOffset + parsedLimit - 1);
+    const { count, items } = await listEvents({
+      eventType: event_type,
+      chargeBoxId: charge_box_id,
+      connectorPk: connector_pk ? Number(connector_pk) : undefined,
+      transactionPk: transaction_pk ? Number(transaction_pk) : undefined,
+      idTag: id_tag,
+      from: from ? new Date(from) : undefined,
+      to: to ? new Date(to) : undefined,
+      limit: parsedLimit,
+      offset: parsedOffset,
+      sort: orderSort,
+    });
 
-    if (event_type) qry = qry.eq('event_type', event_type);
-    if (charge_box_id) qry = qry.eq('charge_box_id', charge_box_id);
-    if (transaction_pk) qry = qry.eq('transaction_id', Number(transaction_pk));
-    if (id_tag) qry = qry.eq('id_tag', id_tag);
-    if (from) qry = qry.gte('created_at', new Date(from).toISOString());
-    if (to) qry = qry.lt('created_at', new Date(to).toISOString());
-
-    const r = await qry;
-    if (r.error) return res.status(500).json({ error: 'query_error', detail: r.error.message });
-
-    // Adicionar connector_pk nulo para compatibilidade com clientes que esperam o campo
-    const items = (r.data || []).map((it: any) => ({ ...it, connector_pk: it.connector_pk ?? null }));
-
-    return res.json({ total: r.count ?? 0, items });
+    return res.json({ total: count, items });
   } catch (err) {
     console.error('[GET /v1/events] error:', err);
     return res.status(500).json({ error: 'internal_error' });
