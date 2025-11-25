@@ -290,7 +290,7 @@ export class OcppCsms extends EventEmitter {
           if (transactionId <= 0) transactionId = 1;
 
           this.registry.bindTx(transactionId, chargeBoxId);
-          ok({ transactionId, idTagInfo: { status: 'Accepted' } });
+          ok({ transactionId, transaction_id: transactionId, idTagInfo: { status: 'Accepted' } });
 
           try {
             await upsertSessionStart({ transactionId, chargeBoxId, idTag: p?.idTag ?? null, startedAt });
