@@ -179,24 +179,6 @@ router.get('/:transactionId/telemetry', async (req: Request, res: Response) => {
     const baseNow = s.rows[0].stopped_at ? new Date(s.rows[0].stopped_at) : new Date();
     const duration_seconds = Math.max(0, Math.floor((baseNow.getTime() - startedAt.getTime()) / 1000));
 
-    // 2) tentar telemetry_latest primeiro
-    const rTl = await pg.query<{
-      energy_kwh: number | null;
-      power_kw: number | null;
-      voltage_v: number | null;
-      current_a: number | null;
-      soc_percent: number | null;
-      temperature_c: number | null;
-      at: string;
-    }>(
-      `SELECT energy_kwh, power_kw, voltage_v, current_a, soc_percent, temperature_c, at
-         FROM orchestrator.telemetry_latest
-        WHERE transaction_id = $1
-        ORDER BY connector_id ASC
-        LIMIT 1`,
-      [tx]
-    );
-
     let energy_kwh: number | undefined;
     let power_kw: number | undefined;
     let voltage_v: number | undefined;
@@ -204,41 +186,30 @@ router.get('/:transactionId/telemetry', async (req: Request, res: Response) => {
     let soc_percent_at: number | undefined;
     let temperature_c: number | undefined;
 
-    if (rTl.rowCount > 0) {
-      const t = rTl.rows[0];
-      if (t.energy_kwh != null) energy_kwh = Number(t.energy_kwh);
-      if (t.power_kw != null) power_kw = Number(t.power_kw);
-      if (t.voltage_v != null) voltage_v = Number(t.voltage_v);
-      if (t.current_a != null) current_a = Number(t.current_a);
-      if (t.soc_percent != null) soc_percent_at = Math.round(Number(t.soc_percent));
-      if (t.temperature_c != null) temperature_c = Number(t.temperature_c);
-    } else {
-      // 3) fallback: calcular a partir de StartTransaction/MeterValues
-      const rStart = await pg.query<{ payload: any }>(
-        `SELECT payload
-           FROM orchestrator.ocpp_events
-          WHERE event_type = $1 AND transaction_id = $2
-          ORDER BY id ASC
-          LIMIT 1`,
-        ['StartTransaction', tx]
-      );
-      const meterStartWh = Number((rStart.rows[0]?.payload?.meterStart ?? 0)) || 0;
+    const rStart = await pg.query<{ payload: any }>(
+      `SELECT payload
+         FROM orchestrator.ocpp_events
+        WHERE event_type = $1 AND transaction_id = $2
+        ORDER BY id ASC
+        LIMIT 1`,
+      ['StartTransaction', tx]
+    );
+    const meterStartWh = Number((rStart.rows[0]?.payload?.meterStart ?? 0)) || 0;
 
-      const rMv = await pg.query<{ payload: any }>(
-        `SELECT payload
-           FROM orchestrator.ocpp_events
-          WHERE event_type = $1 AND transaction_id = $2
-          ORDER BY id DESC
-          LIMIT 1`,
-        ['MeterValues', tx]
-      );
-      const lastMvPayload: any = rMv.rows[0]?.payload ?? null;
-      if (lastMvPayload) {
-        const { wh, soc, power_kw: pk, voltage_v: vv, current_a: ca, temperature_c: tc } = extractTelemetryFromMeterValuesPayload(lastMvPayload);
-        if (typeof wh === 'number' && Number.isFinite(wh)) energy_kwh = Number(Math.max(0, (wh - meterStartWh) / 1000).toFixed(3));
-        if (typeof soc === 'number' && Number.isFinite(soc)) soc_percent_at = Math.round(soc);
-        power_kw = pk; voltage_v = vv; current_a = ca; temperature_c = tc;
-      }
+    const rMv = await pg.query<{ payload: any }>(
+      `SELECT payload
+         FROM orchestrator.ocpp_events
+        WHERE event_type = $1 AND transaction_id = $2
+        ORDER BY id DESC
+        LIMIT 1`,
+      ['MeterValues', tx]
+    );
+    const lastMvPayload: any = rMv.rows[0]?.payload ?? null;
+    if (lastMvPayload) {
+      const { wh, soc, power_kw: pk, voltage_v: vv, current_a: ca, temperature_c: tc } = extractTelemetryFromMeterValuesPayload(lastMvPayload);
+      if (typeof wh === 'number' && Number.isFinite(wh)) energy_kwh = Number(Math.max(0, (wh - meterStartWh) / 1000).toFixed(3));
+      if (typeof soc === 'number' && Number.isFinite(soc)) soc_percent_at = Math.round(soc);
+      power_kw = pk; voltage_v = vv; current_a = ca; temperature_c = tc;
     }
 
     // 4) unit_price / total_amount — opcional
@@ -687,39 +658,5 @@ router.get('/:transactionId', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/:transactionId/telemetry', async (req: Request, res: Response) => {
-  try {
-    const tx = Number(req.params.transactionId);
-    if (!Number.isFinite(tx)) return res.status(400).json({ error: 'invalid_transaction_id' });
-    const rTel = await pg.query<{
-      energy_kwh: number|null, power_kw: number|null, voltage_v: number|null, current_a: number|null,
-      soc_percent: number|null, temperature_c: number|null, duration_seconds: number|null, at: string
-    }>(
-      `SELECT energy_kwh, power_kw, voltage_v, current_a, soc_percent, temperature_c, duration_seconds, at
-         FROM orchestrator.telemetry_latest
-        WHERE transaction_id = $1
-        ORDER BY at DESC
-        LIMIT 1`, [tx]
-    );
-    if (rTel.rowCount === 0) return res.json({ transaction_id: tx, telemetry: null });
-    const t = rTel.rows[0];
-    return res.json({
-      transaction_id: tx,
-      telemetry: {
-        kwh: Number(t.energy_kwh ?? 0),
-        ...(t.power_kw != null ? { power_kw: t.power_kw } : {}),
-        ...(t.voltage_v != null ? { voltage_v: t.voltage_v } : {}),
-        ...(t.current_a != null ? { current_a: t.current_a } : {}),
-        ...(t.soc_percent != null ? { soc_percent_at: Math.round(Number(t.soc_percent)) } : {}),
-        ...(t.temperature_c != null ? { temperature_c: t.temperature_c } : {}),
-        ...(t.duration_seconds != null ? { duration_seconds: t.duration_seconds } : {}),
-      },
-      at: t.at,
-    });
-  } catch (err:any) {
-    console.error('[GET /v1/sessions/:transactionId/telemetry] error:', err);
-    return res.status(500).json({ error: 'internal_error' });
-  }
-});
 
 export default router;
