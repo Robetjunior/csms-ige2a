@@ -151,7 +151,7 @@ export class OcppCsms extends EventEmitter {
     console.log(`[OCPP DEBUG] handleConnection called with URL: ${req.url}`);
     const url = new URL(req.url || '', `http://${req.headers.host}`);
     console.log(`[OCPP DEBUG] URL pathname: ${url.pathname}`);
-    const chargeBoxId = decodeURIComponent(url.pathname.split('/').pop() || 'unknown');
+    const chargeBoxId = decodeURIComponent(url.pathname.split('/').pop() || 'unknown').trim();
     console.log(`[OCPP DEBUG] Extracted chargeBoxId: ${chargeBoxId}`);
 
     this.registry.setPeer(chargeBoxId, ws);
