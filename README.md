@@ -199,6 +199,30 @@ export TEST_CHARGE_BOX_ID=DRBAKANA-TEST-06
 
 ### Relatórios de Teste
 
+## Testar RemoteStart e StartTransaction (PowerShell)
+
+Pré-requisito: Windows/PowerShell e API Key válida (ex.: `minha_chave_super_secreta`).
+
+Exemplo de uso:
+
+```
+./tools/test-remote-start.ps1 -ApiKey 'SUA_CHAVE' -ChargeBoxId 'DRBAKANA-TEST-03'
+```
+
+O script:
+- dispara um `RemoteStart` para o charge point informado;
+- tenta detectar o `transaction_id` por até ~30s (10 tentativas, 3s cada) via `/v1/sessions/active/<cbid>/detail`;
+- lista os últimos 5 eventos `StartTransaction` do CP;
+- mostra contexto de postos online via `/v1/ocpp/online` e `/v1/chargers/online`.
+
+Parâmetros disponíveis:
+- `-BaseUrl` (default: `http://35.231.137.231:3000`)
+- `-ApiKey` (obrigatório)
+- `-ChargeBoxId` (default: `DRBAKANA-TEST-03`)
+- `-IdTag` (default: `DEMO-123456`)
+- `-ConnectorId` (default: `1`)
+
+
 Os testes geram relatórios automáticos:
 
 - `vm-validation-test-report.json` - Resultados da validação da VM

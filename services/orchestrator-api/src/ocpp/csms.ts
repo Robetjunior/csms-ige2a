@@ -85,6 +85,7 @@ export class OcppCsms extends EventEmitter {
   async remoteStart(chargeBoxId: string, args: { idTag: string; connectorId?: number }) {
     const ws = this.registry.getPeer(chargeBoxId);
     if (!ws || ws.readyState !== ws.OPEN) throw new Error('charge_point_offline');
+    try { console.log(`[OCPP-CSMS] RemoteStart.sending chargeBoxId=${chargeBoxId} idTag=${args.idTag} connectorId=${args.connectorId ?? '(none)'}`); } catch {}
     return this.sendCall(ws, 'RemoteStartTransaction', {
       idTag: args.idTag,
       ...(args.connectorId ? { connectorId: args.connectorId } : {}),
@@ -179,6 +180,9 @@ export class OcppCsms extends EventEmitter {
 
       if (isCall(m)) {
         const [, uid, action, payload] = m;
+        try { console.log(`[OCPP-CSMS] Frame.received direction=in action=${action} uniqueId=${uid}`); } catch {}
+        if (action === 'StartTransaction') { try { console.log(`[OCPP-CSMS] StartTransaction.req payload=${JSON.stringify(payload)}`); } catch {} }
+        if (action === 'Authorize') { try { console.log(`[OCPP-CSMS] Authorize.req payload=${JSON.stringify(payload)}`); } catch {} }
         try {
           await this.handleCall(ws, chargeBoxId, uid, action, payload);
         } catch (e:any) {
@@ -191,6 +195,7 @@ export class OcppCsms extends EventEmitter {
         const [, uid, payload] = m;
         const p = this.pending.get(uid);
         if (p) { clearTimeout(p.timer); p.resolve(payload); this.pending.delete(uid); }
+        try { console.log(`[OCPP-CSMS] Frame.received direction=in action=CALLRESULT uniqueId=${uid}`); } catch {}
         return;
       }
 
@@ -199,6 +204,7 @@ export class OcppCsms extends EventEmitter {
         const p = this.pending.get(uid);
         if (p) { clearTimeout(p.timer); p.reject(new Error(`${code}: ${desc}`)); this.pending.delete(uid); }
         console.warn('[OCPP] CALLERROR', { uid, code, desc, details });
+        try { console.log(`[OCPP-CSMS] Frame.received direction=in action=CALLERROR uniqueId=${uid} code=${code} desc=${desc}`); } catch {}
       }
     });
   }
@@ -290,6 +296,7 @@ export class OcppCsms extends EventEmitter {
           if (transactionId <= 0) transactionId = 1;
 
           this.registry.bindTx(transactionId, chargeBoxId);
+          try { console.log(`[OCPP-CSMS] StartTransaction.conf-built transactionId=${transactionId}`); } catch {}
           ok({ transactionId, transaction_id: transactionId, idTagInfo: { status: 'Accepted' } });
 
           try {
@@ -303,6 +310,7 @@ export class OcppCsms extends EventEmitter {
               meterStartWh: Number(p?.meterStart ?? 0),
               idTag: p?.idTag ?? null,
             });
+            try { console.log(`[OCPP-CSMS] Session.created chargeBoxId=${chargeBoxId} transaction_id=${transactionId}`); } catch {}
           } catch (e:any) { console.warn('[OCPP] upsertSessionStart falhou:', e?.message || e); }
 
           try {
@@ -575,6 +583,7 @@ export class OcppCsms extends EventEmitter {
   private sendCall(ws: WebSocket, action: string, payload: any) {
     const uid = crypto.randomUUID().replace(/-/g, '');
     const frame: OcppFrame = [2, uid, action, payload];
+    try { console.log(`[OCPP-CSMS] Call.sending direction=out action=${action} uniqueId=${uid} payload=${JSON.stringify(payload)}`); } catch {}
     ws.send(JSON.stringify(frame));
 
     return new Promise((resolve, reject) => {
@@ -588,6 +597,7 @@ export class OcppCsms extends EventEmitter {
 
   private sendResult(ws: WebSocket, uid: string, payload: any) {
     const frame: OcppFrame = [3, uid, payload];
+    try { console.log(`[OCPP-CSMS] CallResult.sending direction=out uniqueId=${uid} payload=${JSON.stringify(payload)}`); } catch {}
     ws.send(JSON.stringify(frame));
   }
 }

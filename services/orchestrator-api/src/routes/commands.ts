@@ -234,6 +234,7 @@ router.post('/remoteStart', async (req: Request, res: Response) => {
   }
 
   try {
+    try { console.log(`[OCPP-CSMS] RemoteStart.sending chargeBoxId=${chargeBoxId} idTag=${idTag} connectorId=${connectorId ?? '(none)'}`); } catch {}
     await csms.remoteStart(chargeBoxId, { idTag, connectorId });
     if (hasSupabase) {
       await sb.from('commands')
