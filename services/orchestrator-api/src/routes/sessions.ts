@@ -581,6 +581,30 @@ router.get('/active/:chargeBoxId/detail', async (req: Request, res: Response) =>
           ...(temperature_c != null ? { temperature_c } : {}),
         };
       }
+      if (!lastMvPayload) {
+        try {
+          const rTel = await pg.query<{
+            energy_kwh: number|null, power_kw: number|null, voltage_v: number|null, current_a: number|null,
+            soc_percent: number|null, temperature_c: number|null, duration_seconds: number|null
+          }>(
+            `SELECT energy_kwh, power_kw, voltage_v, current_a, soc_percent, temperature_c, duration_seconds
+               FROM orchestrator.telemetry_latest
+              WHERE transaction_id = $1
+              ORDER BY at DESC
+              LIMIT 1`, [tx]
+          );
+          const t = rTel.rows[0] || null;
+          if (t) {
+            telemetry = {
+              kwh: Number(t.energy_kwh ?? 0),
+              ...(t.power_kw != null ? { power_kw: t.power_kw } : {}),
+              ...(t.voltage_v != null ? { voltage_v: t.voltage_v } : {}),
+              ...(t.current_a != null ? { current_a: t.current_a } : {}),
+              ...(t.temperature_c != null ? { temperature_c: t.temperature_c } : {}),
+            };
+          }
+        } catch {}
+      }
     } catch {
       telemetry = { kwh: 0 };
     }
@@ -597,6 +621,7 @@ router.get('/active/:chargeBoxId/detail', async (req: Request, res: Response) =>
       isActive: true,
     };
 
+    try { console.log(`[OCPP-CSMS] Session.active.detail chargeBoxId=${chargeBoxId} transaction_id=${tx} state=charging`); } catch {}
     return res.json({ session, telemetry });
   } catch (err: any) {
     console.error('[GET /v1/sessions/active/:chargeBoxId/detail] error:', err);
@@ -658,6 +683,41 @@ router.get('/:transactionId', async (req: Request, res: Response) => {
     }
   } catch (err: any) {
     console.error('[GET /v1/sessions/:id] error:', err);
+    return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+router.get('/:transactionId/telemetry', async (req: Request, res: Response) => {
+  try {
+    const tx = Number(req.params.transactionId);
+    if (!Number.isFinite(tx)) return res.status(400).json({ error: 'invalid_transaction_id' });
+    const rTel = await pg.query<{
+      energy_kwh: number|null, power_kw: number|null, voltage_v: number|null, current_a: number|null,
+      soc_percent: number|null, temperature_c: number|null, duration_seconds: number|null, at: string
+    }>(
+      `SELECT energy_kwh, power_kw, voltage_v, current_a, soc_percent, temperature_c, duration_seconds, at
+         FROM orchestrator.telemetry_latest
+        WHERE transaction_id = $1
+        ORDER BY at DESC
+        LIMIT 1`, [tx]
+    );
+    if (rTel.rowCount === 0) return res.json({ transaction_id: tx, telemetry: null });
+    const t = rTel.rows[0];
+    return res.json({
+      transaction_id: tx,
+      telemetry: {
+        kwh: Number(t.energy_kwh ?? 0),
+        ...(t.power_kw != null ? { power_kw: t.power_kw } : {}),
+        ...(t.voltage_v != null ? { voltage_v: t.voltage_v } : {}),
+        ...(t.current_a != null ? { current_a: t.current_a } : {}),
+        ...(t.soc_percent != null ? { soc_percent_at: Math.round(Number(t.soc_percent)) } : {}),
+        ...(t.temperature_c != null ? { temperature_c: t.temperature_c } : {}),
+        ...(t.duration_seconds != null ? { duration_seconds: t.duration_seconds } : {}),
+      },
+      at: t.at,
+    });
+  } catch (err:any) {
+    console.error('[GET /v1/sessions/:transactionId/telemetry] error:', err);
     return res.status(500).json({ error: 'internal_error' });
   }
 });

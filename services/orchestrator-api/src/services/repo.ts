@@ -87,22 +87,28 @@ export async function upsertSessionStart(args: {
   chargeBoxId?: string | null;
   idTag?: string | null;
   startedAt?: Date;
+  connectorId?: number | null;
+  mode?: string | null;
 }) {
-  const { transactionId, chargeBoxId, idTag, startedAt } = args;
+  const { transactionId, chargeBoxId, idTag, startedAt, connectorId, mode } = args;
   const sql = `
-    INSERT INTO orchestrator.sessions (transaction_id, charge_box_id, id_tag, started_at)
-    VALUES ($1, $2, $3, $4)
+    INSERT INTO orchestrator.sessions (transaction_id, charge_box_id, id_tag, started_at, connector_id, mode)
+    VALUES ($1, $2, $3, $4, $5, $6)
     ON CONFLICT (transaction_id)
     DO UPDATE SET
       charge_box_id = EXCLUDED.charge_box_id,
       id_tag        = COALESCE(EXCLUDED.id_tag, orchestrator.sessions.id_tag),
-      started_at    = COALESCE(orchestrator.sessions.started_at, EXCLUDED.started_at);
+      started_at    = COALESCE(orchestrator.sessions.started_at, EXCLUDED.started_at),
+      connector_id  = COALESCE(EXCLUDED.connector_id, orchestrator.sessions.connector_id),
+      mode          = COALESCE(EXCLUDED.mode, orchestrator.sessions.mode);
   `;
   await pg.query(sql, [
     transactionId,
     chargeBoxId ?? null,
     idTag ?? null,
     (startedAt ?? new Date()).toISOString(),
+    connectorId ?? null,
+    mode ?? null,
   ]);
 }
 

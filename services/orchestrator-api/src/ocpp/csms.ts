@@ -292,6 +292,9 @@ export class OcppCsms extends EventEmitter {
 
         case 'StartTransaction': {
           const startedAt = p?.timestamp ? new Date(p.timestamp) : new Date();
+          const connectorId = Number(p?.connectorId) || 1;
+          const idTag = p?.idTag ?? null;
+          const meterStartWh = Number(p?.meterStart ?? 0);
           let transactionId = Math.floor(Date.now() / 1000) % 1_000_000_000;
           if (transactionId <= 0) transactionId = 1;
 
@@ -300,45 +303,19 @@ export class OcppCsms extends EventEmitter {
           ok({ transactionId, transaction_id: transactionId, idTagInfo: { status: 'Accepted' } });
 
           try {
-            await upsertSessionStart({ transactionId, chargeBoxId, idTag: p?.idTag ?? null, startedAt });
-            
-            // Registra sessão no telemetry manager
-            telemetryManager.startSession({
-              transactionId,
-              chargeBoxId,
-              startedAt,
-              meterStartWh: Number(p?.meterStart ?? 0),
-              idTag: p?.idTag ?? null,
-            });
+            await upsertSessionStart({ transactionId, chargeBoxId, idTag, startedAt, connectorId, mode: null });
+            telemetryManager.startSession({ transactionId, chargeBoxId, startedAt, meterStartWh, idTag });
             try { console.log(`[OCPP-CSMS] Session.created chargeBoxId=${chargeBoxId} transaction_id=${transactionId}`); } catch {}
           } catch (e:any) { console.warn('[OCPP] upsertSessionStart falhou:', e?.message || e); }
 
           try {
-            await insertEvento({
-              tipo: 'StartTransaction',
-              payload: { ...p, transactionId },
-              chargeBoxId,
-              idTag: p?.idTag ?? null,
-              transactionId,
-            });
+            await insertEvento({ tipo: 'StartTransaction', payload: { ...p, transactionId }, chargeBoxId, idTag, transactionId });
           } catch (e:any) { console.warn('[OCPP] insertEvento StartTransaction falhou:', e?.message || e); }
 
-          // 🔔 eventos realtime
-          // 2.1) manter session.started (front já usa)
           try {
-            publish({
-              type: 'session.started',
-              chargeBoxId,
-              transactionId,
-              idTag: p?.idTag ?? null,
-              startedAt: startedAt.toISOString()
-            });
-          } catch (e:any) {
-            console.warn('[OCPP] publish session.started falhou:', e?.message || e);
-          }
+            publish({ type: 'session.started', chargeBoxId, transactionId, idTag, startedAt: startedAt.toISOString() });
+          } catch (e:any) { console.warn('[OCPP] publish session.started falhou:', e?.message || e); }
 
-          // 2.2) **NOVO**: sintetizar "Charging" para o connectorId informado
-          const connectorId = Number(p?.connectorId) || 1;
           this.emitStatusChanged(chargeBoxId, connectorId, 'Charging', startedAt.toISOString());
           return;
         }
@@ -348,26 +325,13 @@ export class OcppCsms extends EventEmitter {
 
           const tx = Number(p?.transactionId);
           if (Number.isFinite(tx) && tx > 0) this.registry.bindTx(tx, chargeBoxId);
+          try { console.log(`[OCPP-CSMS] MeterValues.received chargeBoxId=${chargeBoxId} transaction_id=${Number.isFinite(tx)?tx:'(none)'} payload=${JSON.stringify(p)}`); } catch {}
 
           try {
-            await insertEvento({
-              tipo: 'MeterValues',
-              payload: p,
-              chargeBoxId,
-              idTag: null,
-              transactionId: Number.isFinite(tx) && tx > 0 ? tx : null
-            });
-          } catch (e:any) {
-            console.warn('[OCPP] insertEvento MeterValues falhou:', e?.message || e);
-          }
+            await insertEvento({ tipo: 'MeterValues', payload: p, chargeBoxId, idTag: null, transactionId: Number.isFinite(tx) && tx > 0 ? tx : null });
+          } catch (e:any) { console.warn('[OCPP] insertEvento MeterValues falhou:', e?.message || e); }
 
-          // Processa telemetria em tempo real
-          try {
-            await telemetryManager.processMeterValues(chargeBoxId, Number.isFinite(tx) ? tx : 0, p);
-          } catch (e:any) {
-            console.warn('[OCPP] telemetryManager.processMeterValues falhou:', e?.message || e);
-          }
-          
+          try { await telemetryManager.processMeterValues(chargeBoxId, Number.isFinite(tx) ? tx : 0, p); } catch (e:any) { console.warn('[OCPP] telemetryManager.processMeterValues falhou:', e?.message || e); }
           return;
         }
 
