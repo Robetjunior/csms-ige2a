@@ -29,11 +29,12 @@ if ($res) { $cmdId = ($res.commandId); if (-not $cmdId) { $cmdId = ($res.id) }; 
 Write-Line ("remoteStart.status=" + ($status))
 Write-Line ("remoteStart.commandId=" + ($cmdId))
 
-# 2) Poll da sessão ativa (~30s: 10 tentativas com Sleep 3s)
+# 2) Poll da sessão ativa (~45s: 15 tentativas com Sleep 3s) com fallbacks
 Write-Line "== Poll sessão ativa (detail) =="
-$maxAttempts = 10
+$maxAttempts = 15
 $sleepSeconds = 3
 $txId = $null
+$charging = $false
 for ($i = 1; $i -le $maxAttempts; $i++) {
   $detail = $null
   try {
@@ -41,17 +42,38 @@ for ($i = 1; $i -le $maxAttempts; $i++) {
   } catch {
     try { $detail = Invoke-RestMethod -Method Get -Uri "$BaseUrl/v1/sessions/active/$ChargeBoxId" -Headers $headers } catch {}
   }
+
   if ($detail) {
     $sess = $detail.session
     if ($sess) {
       if ($sess.transaction_id) { $txId = $sess.transaction_id }
       elseif ($sess.transaction_pk) { $txId = $sess.transaction_pk }
     }
+    if ($detail.telemetry -and $detail.telemetry.power_kw) {
+      try { if ([double]$detail.telemetry.power_kw -gt 0.05) { $charging = $true } } catch {}
+    }
   }
-  $txText = $txId
-  if (-not $txText) { $txText = 'not-found' }
-  Write-Line ("[try $i] transactionId=" + $txText)
-  if ($txId) { break }
+
+  if (-not $txId) {
+    # Fallback 1: último tx conhecido pelo CSMS
+    try {
+      $lt = Invoke-RestMethod -Method Get -Uri "$BaseUrl/v1/ocpp/last-tx/$ChargeBoxId" -Headers $headers
+      if ($lt -and $lt.found -and $lt.transactionId) { $txId = [int]$lt.transactionId }
+    } catch {}
+  }
+
+  if (-not $charging -and $txId) {
+    # Fallback 2: telemetria agregada por transactionId
+    try {
+      $tel = Invoke-RestMethod -Method Get -Uri "$BaseUrl/v1/sessions/$txId/telemetry" -Headers $headers
+      if ($tel -and $tel.power_kw) { try { if ([double]$tel.power_kw -gt 0.05) { $charging = $true } } catch {} }
+    } catch {}
+  }
+
+  $txText = $txId; if (-not $txText) { $txText = 'not-found' }
+  $state = if ($charging) { 'charging' } else { 'idle' }
+  Write-Line ("[try $i] transactionId=$txText powerKw=" + ($detail.telemetry.power_kw) + " state=$state")
+  if ($txId -and $charging) { break }
   Start-Sleep -Seconds $sleepSeconds
 }
 

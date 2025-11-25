@@ -181,7 +181,7 @@ export class OcppCsms extends EventEmitter {
       if (isCall(m)) {
         const [, uid, action, payload] = m;
         try { console.log(`[OCPP-CSMS] Frame.received direction=in action=${action} uniqueId=${uid}`); } catch {}
-        if (action === 'StartTransaction') { try { console.log(`[OCPP-CSMS] StartTransaction.req payload=${JSON.stringify(payload)}`); } catch {} }
+        if (action === 'StartTransaction') { try { console.log(`[OCPP-CSMS] StartTransaction.req chargeBoxId=${chargeBoxId} payload=${JSON.stringify(payload)}`); } catch {} }
         if (action === 'Authorize') { try { console.log(`[OCPP-CSMS] Authorize.req payload=${JSON.stringify(payload)}`); } catch {} }
         try {
           await this.handleCall(ws, chargeBoxId, uid, action, payload);
@@ -296,7 +296,7 @@ export class OcppCsms extends EventEmitter {
           if (transactionId <= 0) transactionId = 1;
 
           this.registry.bindTx(transactionId, chargeBoxId);
-          try { console.log(`[OCPP-CSMS] StartTransaction.conf-built transactionId=${transactionId}`); } catch {}
+          try { console.log(`[OCPP-CSMS] StartTransaction.conf transactionId=${transactionId}`); } catch {}
           ok({ transactionId, transaction_id: transactionId, idTagInfo: { status: 'Accepted' } });
 
           try {

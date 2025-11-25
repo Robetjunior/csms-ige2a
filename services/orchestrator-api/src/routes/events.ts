@@ -79,16 +79,16 @@ router.get('/', async (req: Request, res: Response) => {
     const parsedOffset = Math.max(parseInt(String(offset), 10) || 0, 0);
     const orderAsc = (sort || 'desc').toLowerCase() === 'asc';
 
+    // Consultar diretamente a tabela base ocpp_events e alias transaction_id -> transaction_pk
     let qry = sb
-      .from('events')
-      .select('id, created_at, source, event_type, charge_box_id, connector_pk, transaction_pk, id_tag, payload', { count: 'exact' })
+      .from('ocpp_events')
+      .select('id, created_at, event_type, charge_box_id, transaction_id:transaction_pk, id_tag, payload', { count: 'exact' })
       .order('created_at', { ascending: orderAsc })
       .range(parsedOffset, parsedOffset + parsedLimit - 1);
 
     if (event_type) qry = qry.eq('event_type', event_type);
     if (charge_box_id) qry = qry.eq('charge_box_id', charge_box_id);
-    if (connector_pk) qry = qry.eq('connector_pk', Number(connector_pk));
-    if (transaction_pk) qry = qry.eq('transaction_pk', Number(transaction_pk));
+    if (transaction_pk) qry = qry.eq('transaction_id', Number(transaction_pk));
     if (id_tag) qry = qry.eq('id_tag', id_tag);
     if (from) qry = qry.gte('created_at', new Date(from).toISOString());
     if (to) qry = qry.lt('created_at', new Date(to).toISOString());
@@ -96,7 +96,10 @@ router.get('/', async (req: Request, res: Response) => {
     const r = await qry;
     if (r.error) return res.status(500).json({ error: 'query_error', detail: r.error.message });
 
-    return res.json({ total: r.count ?? 0, items: r.data });
+    // Adicionar connector_pk nulo para compatibilidade com clientes que esperam o campo
+    const items = (r.data || []).map((it: any) => ({ ...it, connector_pk: it.connector_pk ?? null }));
+
+    return res.json({ total: r.count ?? 0, items });
   } catch (err) {
     console.error('[GET /v1/events] error:', err);
     return res.status(500).json({ error: 'internal_error' });
