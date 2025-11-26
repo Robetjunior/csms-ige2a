@@ -96,11 +96,22 @@ streamRouter.get('/', (req: Request, res: Response) => {
   }
   const q = parsed.data;
 
-  // Verificar autenticação via header ou query parameter
-  const apiKey = req.headers['x-api-key'] || q.apiKey;
-  const expectedApiKey = process.env.API_KEY || 'minha_chave_super_secreta';
-  
-  if (!apiKey || apiKey !== expectedApiKey) {
+  // Verificar autenticação via header ou query parameter (suporta múltiplas chaves)
+  const providedRaw = (req.headers['x-api-key'] as any) ?? q.apiKey;
+  const provided = Array.isArray(providedRaw) ? providedRaw[0] : providedRaw;
+
+  function parseKeys(raw?: string): string[] {
+    if (!raw) return [];
+    return raw.split(',').map(s => s.trim()).filter(Boolean);
+  }
+
+  const allowed = new Set<string>();
+  for (const k of parseKeys(process.env.API_KEY)) allowed.add(k);
+  for (const k of parseKeys(process.env.ORCH_API_KEY)) allowed.add(k);
+  for (const k of parseKeys(process.env.API_KEYS)) allowed.add(k);
+  if (allowed.size === 0) allowed.add('minha_chave_super_secreta');
+
+  if (!provided || !allowed.has(String(provided))) {
     return res.status(401).json({ error: 'unauthorized', message: 'API key required' });
   }
   const cbids = toSet<string>(q.cbid);
