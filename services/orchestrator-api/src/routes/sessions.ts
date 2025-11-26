@@ -165,7 +165,6 @@ router.get('/:transactionId/telemetry', async (req: Request, res: Response) => {
   const tx = parsed.data.transactionId;
 
   try {
-    // 1) sessão (started_at, stopped_at)
     const s = await pg.query<{ started_at: string; stopped_at: string | null }>(
       `SELECT started_at, stopped_at
          FROM orchestrator.sessions
@@ -174,9 +173,33 @@ router.get('/:transactionId/telemetry', async (req: Request, res: Response) => {
         LIMIT 1`,
       [tx]
     );
-    if (s.rowCount === 0) return res.status(404).json({ error: 'session_not_found' });
-    const startedAt = new Date(s.rows[0].started_at);
-    const baseNow = s.rows[0].stopped_at ? new Date(s.rows[0].stopped_at) : new Date();
+    let startedAt: Date;
+    let baseNow: Date;
+    if (s.rowCount > 0) {
+      startedAt = new Date(s.rows[0].started_at);
+      baseNow = s.rows[0].stopped_at ? new Date(s.rows[0].stopped_at) : new Date();
+    } else {
+      const rStartTs = await pg.query<{ payload: any; created_at: string }>(
+        `SELECT payload, created_at
+           FROM orchestrator.ocpp_events
+          WHERE event_type = $1 AND transaction_id = $2
+          ORDER BY id ASC
+          LIMIT 1`,
+        ['StartTransaction', tx]
+      );
+      const startIso = rStartTs.rowCount > 0 ? (rStartTs.rows[0].payload?.timestamp ?? rStartTs.rows[0].created_at) : new Date().toISOString();
+      startedAt = new Date(startIso);
+      const rStopTs = await pg.query<{ payload: any; created_at: string }>(
+        `SELECT payload, created_at
+           FROM orchestrator.ocpp_events
+          WHERE event_type = $1 AND transaction_id = $2
+          ORDER BY id DESC
+          LIMIT 1`,
+        ['StopTransaction', tx]
+      );
+      const stopIso = rStopTs.rowCount > 0 ? (rStopTs.rows[0].payload?.timestamp ?? rStopTs.rows[0].created_at) : null;
+      baseNow = stopIso ? new Date(stopIso) : new Date();
+    }
     const duration_seconds = Math.max(0, Math.floor((baseNow.getTime() - startedAt.getTime()) / 1000));
 
     let energy_kwh: number | undefined;
@@ -210,6 +233,20 @@ router.get('/:transactionId/telemetry', async (req: Request, res: Response) => {
       if (typeof wh === 'number' && Number.isFinite(wh)) energy_kwh = Number(Math.max(0, (wh - meterStartWh) / 1000).toFixed(3));
       if (typeof soc === 'number' && Number.isFinite(soc)) soc_percent_at = Math.round(soc);
       power_kw = pk; voltage_v = vv; current_a = ca; temperature_c = tc;
+    }
+    if (!lastMvPayload) {
+      const rStop = await pg.query<{ payload: any }>(
+        `SELECT payload
+           FROM orchestrator.ocpp_events
+          WHERE event_type = $1 AND transaction_id = $2
+          ORDER BY id DESC
+          LIMIT 1`,
+        ['StopTransaction', tx]
+      );
+      const meterStopWh = Number((rStop.rows[0]?.payload?.meterStop ?? 0)) || 0;
+      if (meterStopWh >= meterStartWh) {
+        energy_kwh = Number(Math.max(0, (meterStopWh - meterStartWh) / 1000).toFixed(3));
+      }
     }
 
     // 4) unit_price / total_amount — opcional
