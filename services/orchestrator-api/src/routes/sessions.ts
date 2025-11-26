@@ -3,7 +3,7 @@ import { sb } from '../../supabase';
 import { z } from 'zod';
 import { pg } from '../db';
 import { csms } from '../ocpp/csms';
-import { stopSession } from '../services/repo';
+import { stopSession, upsertSessionStart } from '../services/repo';
 
 const router = Router();
 
@@ -175,7 +175,7 @@ router.get('/:transactionId/telemetry', async (req: Request, res: Response) => {
     );
     let startedAt: Date;
     let baseNow: Date;
-    if (s.rowCount > 0) {
+    if ((s.rowCount ?? 0) > 0) {
       startedAt = new Date(s.rows[0].started_at);
       baseNow = s.rows[0].stopped_at ? new Date(s.rows[0].stopped_at) : new Date();
     } else {
@@ -187,7 +187,7 @@ router.get('/:transactionId/telemetry', async (req: Request, res: Response) => {
           LIMIT 1`,
         ['StartTransaction', tx]
       );
-      const startIso = rStartTs.rowCount > 0 ? (rStartTs.rows[0].payload?.timestamp ?? rStartTs.rows[0].created_at) : new Date().toISOString();
+      const startIso = (rStartTs.rowCount ?? 0) > 0 ? (rStartTs.rows[0].payload?.timestamp ?? rStartTs.rows[0].created_at) : new Date().toISOString();
       startedAt = new Date(startIso);
       const rStopTs = await pg.query<{ payload: any; created_at: string }>(
         `SELECT payload, created_at
@@ -197,7 +197,7 @@ router.get('/:transactionId/telemetry', async (req: Request, res: Response) => {
           LIMIT 1`,
         ['StopTransaction', tx]
       );
-      const stopIso = rStopTs.rowCount > 0 ? (rStopTs.rows[0].payload?.timestamp ?? rStopTs.rows[0].created_at) : null;
+      const stopIso = (rStopTs.rowCount ?? 0) > 0 ? (rStopTs.rows[0].payload?.timestamp ?? rStopTs.rows[0].created_at) : null;
       baseNow = stopIso ? new Date(stopIso) : new Date();
     }
     const duration_seconds = Math.max(0, Math.floor((baseNow.getTime() - startedAt.getTime()) / 1000));
@@ -261,7 +261,7 @@ router.get('/:transactionId/telemetry', async (req: Request, res: Response) => {
           LIMIT 1`,
         [tx]
       );
-      if (rBill.rowCount > 0) {
+      if ((rBill.rowCount ?? 0) > 0) {
         if (rBill.rows[0].unit_price != null) unit_price = Number(rBill.rows[0].unit_price);
         if (rBill.rows[0].total_amount != null) total_amount = Number(rBill.rows[0].total_amount);
       }
@@ -483,6 +483,51 @@ router.get('/admin/:chargeBoxId/active', async (req: Request, res: Response) => 
     });
   } catch (err:any) {
     console.error('[GET /v1/sessions/admin/:chargeBoxId/active] error:', err);
+    return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+router.post('/active', async (req: Request, res: Response) => {
+  try {
+    const BodySchema = z.object({
+      transaction_id: z.number().int().positive(),
+      charge_box_id: z.string().min(1),
+      id_tag: z.string().optional(),
+      connector_id: z.number().int().optional(),
+      mode: z.enum(['AC','DC']).optional(),
+      started_at: z.string().datetime().optional(),
+    });
+    const parsed = BodySchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'invalid_payload', details: parsed.error.issues });
+
+    const b = parsed.data;
+    const startedAt = b.started_at ? new Date(b.started_at) : new Date();
+    await upsertSessionStart({
+      transactionId: b.transaction_id,
+      chargeBoxId: b.charge_box_id,
+      idTag: b.id_tag ?? null,
+      startedAt,
+      connectorId: b.connector_id ?? null,
+      mode: b.mode ?? null,
+    });
+
+    const duration_seconds = 0;
+    return res.status(201).json({
+      session: {
+        transaction_id: b.transaction_id,
+        charge_box_id: b.charge_box_id,
+        id_tag: b.id_tag ?? null,
+        connector_id: b.connector_id ?? null,
+        mode: b.mode ?? null,
+        started_at: startedAt.toISOString(),
+        stopped_at: null,
+        status: 'active',
+        duration_seconds,
+        isActive: true,
+      }
+    });
+  } catch (err: any) {
+    console.error('[POST /v1/sessions/active] error:', err);
     return res.status(500).json({ error: 'internal_error' });
   }
 });

@@ -2,6 +2,7 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { sb } from '../../supabase';
+import { upsertSessionStart } from '../services/repo';
 
 const router = Router();
 
@@ -68,6 +69,19 @@ router.post('/events', async (req: Request, res: Response) => {
           started_at: timestamp.toISOString(),
           connector_id: connectorId ?? null,
         }, { onConflict: 'transaction_id' });
+
+      try {
+        await upsertSessionStart({
+          transactionId,
+          chargeBoxId: chargeBoxId ?? null,
+          idTag: idTag ?? null,
+          startedAt: timestamp,
+          connectorId: connectorId ?? null,
+          mode: null,
+        });
+      } catch (e: any) {
+        console.warn('[OCPP] upsertSessionStart(PG) falhou:', e?.message || e);
+      }
 
       // (opcional) marcar RemoteStart como accepted se houver comando pendente
       await sb

@@ -16,8 +16,8 @@ export function buildCors() {
     const origin = (req.headers?.origin || req.headers?.Origin) as string | undefined;
 
     // Para SSE (/v1/stream) e Mobile Proxy (/charge), ser mais permissivo
-    const isSSE = req.url?.includes('/v1/stream');
-    const isMobileProxy = req.url?.includes('/charge');
+    const isSSE = (req as any).url?.includes('/v1/stream');
+    const isMobileProxy = (req as any).url?.includes('/charge');
     
     // Sem origem (ex.: curl/supertest/app mobile) => permitir
     if (!allowed || !origin) {

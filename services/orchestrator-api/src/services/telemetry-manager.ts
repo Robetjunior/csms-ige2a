@@ -66,6 +66,16 @@ export interface TransactionEventPayload {
 }
 
 /* ============================ Estado Global ============================ */
+type TelemetryInternal = {
+  energy_kwh?: number;
+  power_kw?: number;
+  voltage_v?: number;
+  current_a?: number;
+  soc_percent?: number;
+  temperature_c?: number;
+  duration_seconds?: number;
+};
+
 class TelemetryManager {
   private activeSessions = new Map<number, ActiveSession>();
   private lastUpdate = new Map<number, number>();
@@ -214,8 +224,8 @@ class TelemetryManager {
   }
 
   // Validação de dados de telemetria
-  private validateTelemetryData(data: TelemetryData, transactionId?: number, chargeBoxId?: string): TelemetryData | null {
-    const validated: TelemetryData = {};
+  private validateTelemetryData(data: TelemetryInternal, transactionId?: number, chargeBoxId?: string): TelemetryInternal | null {
+    const validated: TelemetryInternal = {};
     let hasValidData = false;
 
     // Validar potência
@@ -393,7 +403,7 @@ class TelemetryManager {
         powerKW: validatedData.power_kw,
         voltageV: validatedData.voltage_v !== undefined ? Math.round(validatedData.voltage_v) : undefined,
         currentA: validatedData.current_a,
-        temperatureC: validatedData.temperature_c !== undefined ? Number(validatedData.temperature_c.toFixed ? (validatedData.temperature_c as any).toFixed(2) : validatedData.temperature_c) : undefined,
+        temperatureC: validatedData.temperature_c != null ? Number(Number(validatedData.temperature_c).toFixed(2)) : undefined,
         energyKWh: validatedData.energy_kwh,
         durationMin: validatedData.duration_seconds !== undefined ? Math.round((validatedData.duration_seconds as number) / 60) : undefined,
         source: 'live',
@@ -409,8 +419,8 @@ class TelemetryManager {
       let reused = false;
       const keys: (keyof TelemetryData)[] = ['batteryPercent','powerKW','voltageV','currentA','temperatureC','energyKWh'];
       for (const k of keys) {
-        if (normalized[k] === undefined && last[k] !== undefined) {
-          normalized[k] = last[k] as any;
+        if ((normalized as any)[k] === undefined && (last as any)[k] !== undefined) {
+          (normalized as any)[k] = (last as any)[k];
           reused = true;
         }
       }
@@ -439,8 +449,8 @@ class TelemetryManager {
   /**
    * Extrai dados de telemetria de uma mensagem MeterValues
    */
-  private extractTelemetryFromMeterValues(payload: MeterValuesPayload, session: ActiveSession): TelemetryData {
-    const telemetry: TelemetryData = {};
+  private extractTelemetryFromMeterValues(payload: MeterValuesPayload, session: ActiveSession): TelemetryInternal {
+    const telemetry: TelemetryInternal = {};
     // Acumuladores por fase
     const powerWByPhase: Record<string, number> = {};
     const voltageVByPhase: Record<string, number> = {};
@@ -597,7 +607,7 @@ class TelemetryManager {
       const session = this.activeSessions.get(tx);
       if (!session) return;
 
-      const telemetry: TelemetryData = {};
+      const telemetry: TelemetryInternal = {};
       const powerWByPhase: Record<string, number> = {};
       const voltageVByPhase: Record<string, number> = {};
       const currentAByPhase: Record<string, number> = {};
@@ -707,12 +717,12 @@ class TelemetryManager {
         connectorId,
         transactionId: tx,
         timestampUtc: updatedAtISO,
-        context: payload?.eventType === 'Ended' ? 'Sample.Ended' : 'Sample.Periodic',
+        context: payload?.eventType === 'Ended' ? 'Transaction.End' : 'Sample.Periodic',
         batteryPercent: validated.soc_percent,
         powerKW: validated.power_kw,
         voltageV: validated.voltage_v !== undefined ? Math.round(validated.voltage_v) : undefined,
         currentA: validated.current_a,
-        temperatureC: validated.temperature_c !== undefined ? Number(validated.temperature_c.toFixed ? (validated.temperature_c as any).toFixed(2) : validated.temperature_c) : undefined,
+        temperatureC: validated.temperature_c != null ? Number(Number(validated.temperature_c).toFixed(2)) : undefined,
         energyKWh: validated.energy_kwh,
         durationMin: validated.duration_seconds !== undefined ? Math.round((validated.duration_seconds as number) / 60) : undefined,
         source: 'live',
@@ -726,8 +736,8 @@ class TelemetryManager {
       let reused = false;
       const keys: (keyof TelemetryData)[] = ['batteryPercent','powerKW','voltageV','currentA','temperatureC','energyKWh'];
       for (const k of keys) {
-        if (normalized[k] === undefined && last[k] !== undefined) {
-          normalized[k] = last[k] as any;
+        if ((normalized as any)[k] === undefined && (last as any)[k] !== undefined) {
+          (normalized as any)[k] = (last as any)[k];
           reused = true;
         }
       }

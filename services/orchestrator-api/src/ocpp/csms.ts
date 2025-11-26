@@ -231,7 +231,7 @@ export class OcppCsms extends EventEmitter {
               LIMIT 1`,
             [chargeBoxId]
           );
-          if (r.rowCount > 0) {
+          if ((r.rowCount ?? 0) > 0) {
             const tx = Number(r.rows[0].transaction_id);
             try {
               await stopSession({ transactionId: tx, stoppedAt: new Date(at), stopReason: 'StatusAvailableCleanup' });

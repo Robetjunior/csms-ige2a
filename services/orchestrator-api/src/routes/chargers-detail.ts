@@ -34,7 +34,7 @@ router.get('/:chargeBoxId', async (req: Request, res: Response) => {
     .select('connector_id')
     .eq('charge_box_id', chargeBoxId)
     .is('stopped_at', null);
-  const inUse = new Set((act.data || []).map(r => r.connector_id));
+  const inUse = new Set((act.data || []).map((r: any) => r.connector_id));
 
   const connectors = (cons.data || []).map((c: any) => ({
     connectorId: Number(c.connector_id),

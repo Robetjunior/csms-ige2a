@@ -51,16 +51,16 @@ router.get('/online', async (req:Request, res:Response) => {
     }
 
     const cutoff = new Date(Date.now() - sinceMinutes*60_000).toISOString();
-    const v = await withTimeout(sb.from('last_heartbeat_v').select('charge_box_id,last_heartbeat_at').gte('last_heartbeat_at', cutoff));
+    const v: any = await withTimeout<any>(sb.from('last_heartbeat_v').select('charge_box_id,last_heartbeat_at').gte('last_heartbeat_at', cutoff));
     const hb = new Map<string,string>();
     if (v && !v.error && v.data) for (const r of v.data as any[]) hb.set(r.charge_box_id, r.last_heartbeat_at);
     else {
-      const e = await withTimeout(sb.from('ocpp_events').select('charge_box_id,created_at').eq('event_type','Heartbeat').gte('created_at', cutoff).limit(5000));
+      const e: any = await withTimeout<any>(sb.from('ocpp_events').select('charge_box_id,created_at').eq('event_type','Heartbeat').gte('created_at', cutoff).limit(5000));
       if (e && !e.error && e.data) for (const r of e.data as any[]) hb.set(r.charge_box_id, r.created_at);
     }
     const ws = new Set(csms.listOnline());
     const ids = Array.from(new Set([...ws, ...hb.keys()])).slice(0, limit);
-    const st = ids.length ? await withTimeout(sb.from('last_status_v').select('charge_box_id,status,last_status_at').in('charge_box_id', ids)) : null;
+    const st: any = ids.length ? await withTimeout<any>(sb.from('last_status_v').select('charge_box_id,status,last_status_at').in('charge_box_id', ids)) : null;
     const status = new Map<string,{s:string,t:string|null}>();
     if (st && !st.error && st.data) for (const r of st.data as any[]) status.set(r.charge_box_id, { s:r.status, t:r.last_status_at });
 
@@ -91,7 +91,7 @@ router.get('/:chargeBoxId', async (req:Request, res:Response)=>{
   const id = String(req.params.chargeBoxId||'').trim();
   if (!id) return err(res,400,'invalid_charge_box_id');
   try {
-    const cb = await withTimeout(sb.from('charge_boxes_v').select('charge_box_id,site,lat,lon,address').eq('charge_box_id', id).maybeSingle());
+    const cb: any = await withTimeout<any>(sb.from('charge_boxes_v').select('charge_box_id,site,lat,lon,address').eq('charge_box_id', id).maybeSingle());
     const snap = csms.getStatusSnapshot(id);
     t.done();
     const latVal = (cb?.data?.lat!=null && Number.isFinite(Number(cb.data.lat))) ? Number(cb.data.lat) : null;
@@ -126,7 +126,7 @@ router.get('/', async (req:Request, res:Response)=>{
     const minLon=(lon as number)-lonDeg, maxLon=(lon as number)+lonDeg;
 
     // Seleciona lat/lon e filtra por latitude no banco; longitude é filtrada no Node.
-    const q = await withTimeout(sb.from('charge_boxes_v')
+    const q: any = await withTimeout<any>(sb.from('charge_boxes_v')
       .select('charge_box_id,site,lat,lon')
       .gte('lat', minLat).lte('lat', maxLat));
 
@@ -136,16 +136,16 @@ router.get('/', async (req:Request, res:Response)=>{
         const lonNum = (r.lon!=null && Number.isFinite(Number(r.lon))) ? Number(r.lon) : null;
         return { row:r, latNum, lonNum };
       })
-      .filter(({latNum, lonNum})=> latNum!=null && lonNum!=null && lonNum>=minLon && lonNum<=maxLon)
-      .map(({row, latNum, lonNum})=>({
+      .filter(({latNum, lonNum}: any)=> latNum!=null && lonNum!=null && lonNum>=minLon && lonNum<=maxLon)
+      .map(({row, latNum, lonNum}: any)=>({
         chargeBoxId: row.charge_box_id,
         site: row.site ?? null,
         coords: { lat: latNum as number, lon: lonNum as number },
         distanceKm: haversineKm(lat as number, lon as number, latNum as number, lonNum as number),
       }))
-      .sort((a,b)=>a.distanceKm-b.distanceKm)
+      .sort((a: any,b: any)=>a.distanceKm-b.distanceKm)
       .slice(0, limit)
-      .map(b=>{
+      .map((b: any)=>{
         const snap = csms.getStatusSnapshot(b.chargeBoxId);
         const anyBusy = (snap.connectors||[]).some(c=>['Preparing','Charging','SuspendedEVSE','SuspendedEV','Finishing','Reserved','Occupied'].includes(String(c.status||'')));
         return {
@@ -174,7 +174,7 @@ router.patch('/:chargeBoxId/location', async (req:Request, res:Response)=>{
     if (!isValidLatLon(lat, lon)) return err(res,400,'invalid_parameters');
     // Alguns ambientes possuem duas versões da função RPC (com e sem p_upsert)
     // Para evitar ambiguidade, sempre enviamos p_upsert
-    const rpc = await withTimeout(sb.rpc('set_cp_location', {
+    const rpc = await withTimeout<any>(sb.rpc('set_cp_location', {
       p_charge_box_id: String(chargeBoxId),
       p_lat: lat,
       p_lon: lon,
@@ -194,7 +194,7 @@ router.post('/:chargeBoxId/location', async (req:Request, res:Response)=>{
     const { latitude, longitude, address } = (req.body||{}) as {latitude:number;longitude:number;address?:string|null};
     const lat = Number(latitude), lon = Number(longitude);
     if (!isValidLatLon(lat, lon)) return err(res,400,'invalid_parameters');
-    const rpc = await withTimeout(sb.rpc('set_cp_location', {
+    const rpc = await withTimeout<any>(sb.rpc('set_cp_location', {
       p_charge_box_id: String(chargeBoxId),
       p_lat: lat,
       p_lon: lon,

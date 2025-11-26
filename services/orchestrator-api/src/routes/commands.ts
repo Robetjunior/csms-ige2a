@@ -149,7 +149,7 @@ router.post('/remoteStart', async (req: Request, res: Response) => {
       }
       sql += ` ORDER BY id DESC LIMIT 1`;
       const r = await pg.query(sql, params);
-      if (r.rowCount > 0) idemRow = r.rows[0];
+      if ((r.rowCount ?? 0) > 0) idemRow = r.rows[0];
     } catch (e:any) {
       console.error('[remoteStart] pg idem error:', e?.message||e);
       return res.status(500).json({ error:'query_error' });
@@ -297,7 +297,7 @@ router.post('/remoteStop', async (req: Request, res: Response) => {
           LIMIT 1`,
         [tx]
       );
-      if (r.rowCount > 0) existingRow = r.rows[0];
+      if ((r.rowCount ?? 0) > 0) existingRow = r.rows[0];
     } catch (e:any) {
       console.error('[remoteStop] pg idem error:', e?.message||e);
       // Fallback opcional p/ Supabase em caso de falha no PG
