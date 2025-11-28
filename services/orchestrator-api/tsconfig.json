@@ -4,14 +4,14 @@
     "target": "ES2020",
     "module": "CommonJS",
     "moduleResolution": "Node",
-    "rootDir": ".",                // <— era "src"
+    "rootDir": ".",
     "outDir": "dist",
     "esModuleInterop": true,
     "strict": true,
     "lib": ["ES2022", "DOM"],
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "noEmit": true,
+    "noEmit": false,
     "baseUrl": ".",
     "paths": {
       "@src/*": ["src/*"],

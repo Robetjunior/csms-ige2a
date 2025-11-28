@@ -643,7 +643,36 @@ class TelemetryManager {
 
       console.log(`[Telemetry] ${this.activeSessions.size} sessões ativas carregadas`);
     } catch (error) {
-      console.error('[Telemetry] Erro ao carregar sessões ativas:', error);
+      try {
+        if (!sb) throw error;
+        const r = await sb
+          .from('sessions')
+          .select('transaction_id, charge_box_id, started_at, id_tag, stopped_at')
+          .is('stopped_at', null)
+          .order('started_at', { ascending: false });
+        if (r.error) throw r.error;
+        for (const s of r.data || []) {
+          const rStart = await sb
+            .from('ocpp_events')
+            .select('payload')
+            .eq('event_type', 'StartTransaction')
+            .eq('transaction_id', s.transaction_id)
+            .order('id', { ascending: true })
+            .limit(1)
+            .maybeSingle();
+          const meterStartWh = Number((rStart.data?.payload?.meterStart ?? 0)) || 0;
+          this.startSession({
+            transactionId: s.transaction_id,
+            chargeBoxId: s.charge_box_id,
+            startedAt: new Date(s.started_at),
+            meterStartWh,
+            idTag: s.id_tag,
+          });
+        }
+        console.log(`[Telemetry] ${this.activeSessions.size} sessões ativas carregadas (fallback Supabase HTTP)`);
+      } catch (err) {
+        console.error('[Telemetry] Erro ao carregar sessões ativas:', err);
+      }
     }
   }
 

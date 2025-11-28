@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "ts-node-dev -r dotenv/config --respawn --transpile-only --poll --interval 300 src/main.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/main.js",
+    "start": "node dist/src/main.js",
     "lint": "echo lint"
   },
   "dependencies": {

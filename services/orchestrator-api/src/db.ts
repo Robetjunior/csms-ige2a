@@ -106,6 +106,12 @@ export async function checkPg(): Promise<boolean> {
     const r = await pg.query<{ ok: number }>('SELECT 1 AS ok');
     return r.rows?.[0]?.ok === 1;
   } catch {
+    try {
+      if (sb) {
+        const { data, error } = await sb.rpc('health_ping');
+        return !error && data === 1;
+      }
+    } catch {}
     return false;
   }
 }
