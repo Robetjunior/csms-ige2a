@@ -45,11 +45,10 @@ export class OcppCsms extends EventEmitter {
     this.wss = new WebSocketServer({
       noServer: true,
       handleProtocols: (protocols: Set<string>) => {
-        // Accept either ocpp1.6 or ocpp1.6j; prefer what the client requested
         const requested = Array.from(protocols);
         const match = requested.find(p => OCPP_ACCEPTED_SUBPROTOCOLS.includes(p as any));
-        const accepted = match || (protocols.has(OCPP_SUBPROTOCOL) ? OCPP_SUBPROTOCOL : false);
-        console.log(`[OCPP DEBUG] handleProtocols requested=${requested.join(', ') || '(none)'} accepted=${accepted || '(none)'}`);
+        const accepted = match || OCPP_SUBPROTOCOL;
+        console.log(`[OCPP DEBUG] handleProtocols requested=${requested.join(', ') || '(none)'} accepted=${accepted}`);
         return accepted;
       },
     });
@@ -256,6 +255,7 @@ export class OcppCsms extends EventEmitter {
           ok({ status: 'Accepted', currentTime: new Date().toISOString(), interval: 180 });
           try { this.registry.setHeartbeatInterval(chargeBoxId, 180); } catch {}
           try { this.registry.setHeartbeat(chargeBoxId); } catch {}
+          try { this.emitStatusChanged(chargeBoxId, 1, 'Available', new Date().toISOString()); } catch {}
 
           // (opcional) provisionamento leve do charge box no banco poderia entrar aqui
 

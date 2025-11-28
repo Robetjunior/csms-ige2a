@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { sb } from '../../supabase';
 import { csms } from '../ocpp/csms';
+import { withTimeout } from '../helpers/withTimeout';
 
 const router = Router();
 // Removido middleware redundante requireApiKey; já aplicado globalmente em /v1
@@ -13,14 +14,7 @@ const timed = (label:string)=>{ const t0=Date.now(); return { t0, done:(extra?:a
 const ok = (res:Response, data:any)=> res.json(data);
 const err = (res:Response, code:number, error='internal_error', detail?:any)=> res.status(code).json({ error, detail });
 
-// Add a short timeout for Supabase queries to avoid hanging responses
-const qTimeoutMs = Number(process.env.SUPABASE_QUERY_TIMEOUT_MS ?? '1500');
-async function withTimeout<T>(p: Promise<T>, ms = qTimeoutMs): Promise<T | null> {
-  return await Promise.race([
-    p,
-    new Promise<T | null>((resolve) => setTimeout(() => resolve(null), ms)),
-  ]);
-}
+// Supabase queries are wrapped with withTimeout to ensure snappy responses
 
 /* GET /v1/chargers/online */
 router.get('/online', async (req:Request, res:Response) => {
@@ -130,6 +124,27 @@ router.get('/', async (req:Request, res:Response)=>{
       .select('charge_box_id,site,lat,lon')
       .gte('lat', minLat).lte('lat', maxLat));
 
+    // If Supabase timed out, build response purely from CSMS snapshot
+    if (!q || q.error) {
+      console.warn('[FALLBACK] Supabase timeout → CSMS', { route: '/v1/chargers', lat, lon, radiusKm });
+      const online = csms.listOnline();
+      const items = online.map((id: string) => {
+        const snap = csms.getStatusSnapshot(id);
+        const anyBusy = (snap.connectors||[]).some(c=>['Preparing','Charging','SuspendedEVSE','SuspendedEV','Finishing','Reserved','Occupied'].includes(String(c.status||'')));
+        return {
+          chargeBoxId: id,
+          site: null,
+          coords: { lat: null, lon: null },
+          distanceKm: undefined,
+          overallStatus: anyBusy ? 'Occupied' : (snap.online ? (snap.connectors?.length?'Available':'Available') : 'Unknown'),
+          wsOnline: snap.online,
+          lastHeartbeatAt: snap.lastHeartbeat ?? null,
+        };
+      }).slice(0, limit);
+      t.done({ count: items.length, fallback: 'csms' });
+      return ok(res, items);
+    }
+
     const base = (q?.data||[])
       .map((r:any)=>{
         const latNum = (r.lat!=null && Number.isFinite(Number(r.lat))) ? Number(r.lat) : null;
@@ -160,6 +175,30 @@ router.get('/', async (req:Request, res:Response)=>{
       });
 
     t.done({count:base.length});
+    // Fallback: incluir DRBAKANA-TEST-10 quando não houver registros de lat/lon no banco
+    try {
+      const alreadyHas = base.some((b:any)=> String(b.chargeBoxId||'') === 'DRBAKANA-TEST-10');
+      const onlineIds = new Set(csms.listOnline());
+      const isOnline = onlineIds.has('DRBAKANA-TEST-10');
+      if (!alreadyHas && isOnline) {
+        const fallbackLat = -23.5158874;
+        const fallbackLon = -46.7022909;
+        const dist = haversineKm(lat as number, lon as number, fallbackLat, fallbackLon);
+        if (dist <= radiusKm) {
+          const snap = csms.getStatusSnapshot('DRBAKANA-TEST-10');
+          const anyBusy = (snap.connectors||[]).some(c=>['Preparing','Charging','SuspendedEVSE','SuspendedEV','Finishing','Reserved','Occupied'].includes(String(c.status||'')));
+          base.push({
+            chargeBoxId: 'DRBAKANA-TEST-10',
+            site: 'Teste',
+            coords: { lat: fallbackLat, lon: fallbackLon },
+            distanceKm: Number(dist.toFixed(3)),
+            overallStatus: anyBusy ? 'Occupied' : (snap.connectors?.length ? 'Available' : 'Unknown'),
+            wsOnline: snap.online,
+            lastHeartbeatAt: snap.lastHeartbeat ?? null,
+          });
+        }
+      }
+    } catch {}
     return ok(res, base);
   } catch(e:any){ console.error('[list]',e?.message||e); return err(res,500); }
 });

@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { pg } from '../db';
 import { csms } from '../ocpp/csms';
 import { stopSession, upsertSessionStart } from '../services/repo';
+import { withTimeout } from '../helpers/withTimeout';
+import { telemetryManager } from '../services/telemetry-manager';
 
 const router = Router();
 
@@ -94,7 +96,22 @@ router.get('/:transactionId/progress', async (req: Request, res: Response) => {
         LIMIT 1`,
       [tx]
     );
-    if (s.rowCount === 0) return res.status(404).json({ error:'session_not_found' });
+    if (s.rowCount === 0) {
+      const mem = telemetryManager.computeSnapshotFromMemory(tx);
+      if (mem) {
+        return res.json({
+          kwh: mem.energy_kwh,
+          duration_seconds: mem.duration_seconds ?? 0,
+          started_at: mem.started_at,
+          ...(mem.soc_percent_at != null ? { soc_percent_at: mem.soc_percent_at } : {}),
+          ...(mem.power_kw != null ? { power_kw: mem.power_kw } : {}),
+          ...(mem.voltage_v != null ? { voltage_v: mem.voltage_v } : {}),
+          ...(mem.current_a != null ? { current_a: mem.current_a } : {}),
+          ...(mem.temperature_c != null ? { temperature_c: mem.temperature_c } : {}),
+        });
+      }
+      return res.status(404).json({ error:'session_not_found' });
+    }
     const startedAt = new Date(s.rows[0].started_at);
     const baseNow = s.rows[0].stopped_at ? new Date(s.rows[0].stopped_at) : new Date();
     const duration_seconds = Math.max(0, Math.floor((baseNow.getTime() - startedAt.getTime())/1000));
@@ -151,6 +168,19 @@ router.get('/:transactionId/progress', async (req: Request, res: Response) => {
       ...(temperature_c != null ? { temperature_c } : {})
     });
   } catch (err:any) {
+    const mem = telemetryManager.computeSnapshotFromMemory(tx);
+    if (mem) {
+      return res.json({
+        kwh: mem.energy_kwh,
+        duration_seconds: mem.duration_seconds ?? 0,
+        started_at: mem.started_at,
+        ...(mem.soc_percent_at != null ? { soc_percent_at: mem.soc_percent_at } : {}),
+        ...(mem.power_kw != null ? { power_kw: mem.power_kw } : {}),
+        ...(mem.voltage_v != null ? { voltage_v: mem.voltage_v } : {}),
+        ...(mem.current_a != null ? { current_a: mem.current_a } : {}),
+        ...(mem.temperature_c != null ? { temperature_c: mem.temperature_c } : {}),
+      });
+    }
     console.error('[GET /v1/sessions/:transactionId/progress] error:', err);
     return res.status(500).json({ error:'internal_error' });
   }
@@ -281,6 +311,22 @@ router.get('/:transactionId/telemetry', async (req: Request, res: Response) => {
       at: new Date().toISOString(),
     });
   } catch (err:any) {
+    const mem = telemetryManager.computeSnapshotFromMemory(tx);
+    if (mem) {
+      return res.json({
+        kwh: mem.energy_kwh,
+        duration_seconds: mem.duration_seconds ?? 0,
+        started_at: mem.started_at,
+        ...(mem.power_kw != null ? { power_kw: mem.power_kw } : {}),
+        ...(mem.voltage_v != null ? { voltage_v: mem.voltage_v } : {}),
+        ...(mem.current_a != null ? { current_a: mem.current_a } : {}),
+        ...(mem.temperature_c != null ? { temperature_c: mem.temperature_c } : {}),
+        ...(mem.soc_percent_at != null ? { soc_percent_at: mem.soc_percent_at } : {}),
+        ...(mem.unit_price != null ? { unit_price: mem.unit_price } : {}),
+        ...(mem.total_amount != null ? { total_amount: mem.total_amount } : {}),
+        at: mem.at ?? new Date().toISOString(),
+      });
+    }
     console.error('[GET /v1/sessions/:transactionId/telemetry] error:', err);
     return res.status(500).json({ error: 'internal_error' });
   }
@@ -562,26 +608,56 @@ router.get('/active/:chargeBoxId/detail', async (req: Request, res: Response) =>
           LIMIT 1`,
         [chargeBoxId]
       );
-      if (r.rowCount === 0) return res.json({ session: null, telemetry: null });
+      if (r.rowCount === 0) {
+        if (sb) {
+          const rpc: any = await withTimeout<any>(sb.rpc('sessions_active_detail', { p_charge_box_id: chargeBoxId }));
+          if (rpc && !rpc.error) {
+            const d: any = rpc.data;
+            if (!d || !d.session) return res.json({ session: null, telemetry: null });
+            const duration_seconds = Math.max(0, Math.floor((Date.now() - new Date(d.session.started_at).getTime()) / 1000));
+            const session = {
+              transaction_id: Number(d.session.transaction_id),
+              charge_box_id: String(d.session.charge_box_id),
+              id_tag: d.session.id_tag ?? null,
+              connector_id: null,
+              mode: null,
+              started_at: d.session.started_at,
+              status: 'active',
+              duration_seconds,
+              isActive: true,
+            };
+            try { console.log('[OCPP-CSMS] Session.active.detail (RPC)', { chargeBoxId, transaction_id: Number(d.session.transaction_id), state: 'charging' }); } catch {}
+            return res.json({ session, telemetry: d.telemetry ?? null });
+          }
+        }
+        console.warn('[FALLBACK] Supabase timeout → empty detail', { route: '/v1/sessions/active/:id/detail', chargeBoxId });
+        return res.json({ session: null, telemetry: null });
+      }
       s = r.rows[0] as any;
       const snap = csms.getStatusSnapshot(chargeBoxId);
       try { console.log('[OCPP-CSMS] Session.active.detail', { chargeBoxId, transaction_id: Number(s.transaction_id), state: 'charging' }); } catch {}
     } catch {
-      // Fallback via Supabase REST (cert válido) apenas para a sessão
       if (!sb) throw new Error('db_unavailable');
-      const r2 = await sb
-        .from('sessions')
-        .select('transaction_id, charge_box_id, id_tag, started_at, stopped_at, stop_reason')
-        .eq('charge_box_id', chargeBoxId)
-        .is('stopped_at', null)
-        .order('id', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (r2.error) return res.status(500).json({ error: 'query_error', detail: r2.error.message });
-      if (!r2.data) return res.json({ session: null, telemetry: null });
-      s = r2.data as any;
-      const snap = csms.getStatusSnapshot(chargeBoxId);
-      try { console.log('[OCPP-CSMS] Session.active.detail', { chargeBoxId, transaction_id: Number(s.transaction_id), state: 'charging' }); } catch {}
+      const rpc: any = await withTimeout<any>(sb.rpc('sessions_active_detail', { p_charge_box_id: chargeBoxId }));
+      if (!rpc || rpc.error) return res.json({ session: null, telemetry: null });
+      if (!rpc) console.warn('[FALLBACK] Supabase timeout → empty detail', { route: '/v1/sessions/active/:id/detail', chargeBoxId });
+      const d: any = rpc.data;
+      if (!d || !d.session) return res.json({ session: null, telemetry: null });
+      const txRpc = Number(d.session.transaction_id);
+      const duration_seconds_rpc = Math.max(0, Math.floor((Date.now() - new Date(d.session.started_at).getTime()) / 1000));
+      const sessionRpc = {
+        transaction_id: txRpc,
+        charge_box_id: String(d.session.charge_box_id),
+        id_tag: d.session.id_tag ?? null,
+        connector_id: null,
+        mode: null,
+        started_at: d.session.started_at,
+        status: 'active',
+        duration_seconds: duration_seconds_rpc,
+        isActive: true,
+      };
+      try { console.log('[OCPP-CSMS] Session.active.detail (RPC)', { chargeBoxId, transaction_id: txRpc, state: 'charging' }); } catch {}
+      return res.json({ session: sessionRpc, telemetry: d.telemetry ?? null });
     }
     tx = Number(s.transaction_id);
     duration_seconds = Math.max(0, Math.floor((Date.now() - new Date(s.started_at).getTime()) / 1000));
@@ -635,28 +711,22 @@ router.get('/active/:chargeBoxId/detail', async (req: Request, res: Response) =>
         };
       }
       if (!lastMvPayload) {
-        try {
-          const rTel = await pg.query<{
-            energy_kwh: number|null, power_kw: number|null, voltage_v: number|null, current_a: number|null,
-            soc_percent: number|null, temperature_c: number|null, duration_seconds: number|null
-          }>(
-            `SELECT energy_kwh, power_kw, voltage_v, current_a, soc_percent, temperature_c, duration_seconds
-               FROM orchestrator.telemetry_latest
-              WHERE transaction_id = $1
-              ORDER BY at DESC
-              LIMIT 1`, [tx]
-          );
-          const t = rTel.rows[0] || null;
-          if (t) {
-            telemetry = {
-              kwh: Number(t.energy_kwh ?? 0),
-              ...(t.power_kw != null ? { power_kw: t.power_kw } : {}),
-              ...(t.voltage_v != null ? { voltage_v: t.voltage_v } : {}),
-              ...(t.current_a != null ? { current_a: t.current_a } : {}),
-              ...(t.temperature_c != null ? { temperature_c: t.temperature_c } : {}),
-            };
-          }
-        } catch {}
+        if (sb) {
+          try {
+            const rpc: any = await withTimeout<any>(sb.rpc('sessions_active_detail', { p_charge_box_id: chargeBoxId }));
+            if (rpc && !rpc.error && rpc.data && rpc.data.telemetry) {
+              const t: any = rpc.data.telemetry;
+              telemetry = {
+                kwh: Number(t.kwh ?? 0),
+                ...(t.power_kw != null ? { power_kw: Number(t.power_kw) } : {}),
+                ...(t.voltage_v != null ? { voltage_v: Number(t.voltage_v) } : {}),
+                ...(t.current_a != null ? { current_a: Number(t.current_a) } : {}),
+                ...(t.temperature_c != null ? { temperature_c: Number(t.temperature_c) } : {}),
+                ...(t.soc_percent_at != null ? { soc_percent_at: Math.round(Number(t.soc_percent_at)) } : {}),
+              };
+            }
+          } catch {}
+        }
       }
     } catch {
       telemetry = { kwh: 0 };

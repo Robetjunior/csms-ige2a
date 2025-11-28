@@ -312,6 +312,57 @@ class TelemetryManager {
     return this.activeSessions.size;
   }
 
+  /** Obtém sessão ativa por transactionId */
+  getSessionByTx(transactionId: number): ActiveSession | undefined {
+    return this.activeSessions.get(transactionId);
+  }
+
+  /** Obtém último payload normalizado armazenado em memória */
+  getLatestNormalized(transactionId: number): Partial<TelemetryData> | undefined {
+    const s = this.activeSessions.get(transactionId);
+    return s?.lastNormalized;
+  }
+
+  /** Calcula progresso/telemetria básica a partir do estado em memória */
+  computeSnapshotFromMemory(transactionId: number): {
+    started_at?: string;
+    duration_seconds?: number;
+    energy_kwh?: number;
+    power_kw?: number;
+    voltage_v?: number;
+    current_a?: number;
+    soc_percent_at?: number;
+    temperature_c?: number;
+    unit_price?: number;
+    total_amount?: number;
+    at?: string;
+  } | null {
+    const s = this.activeSessions.get(transactionId);
+    if (!s) return null;
+    const now = new Date();
+    const startedAt = s.startedAt;
+    const last = s.lastNormalized || {};
+    const kwh = (typeof s.lastMeterWh === 'number' && Number.isFinite(s.lastMeterWh))
+      ? Math.max(0, (s.lastMeterWh - s.meterStartWh) / 1000)
+      : undefined;
+    const durationSeconds = Math.floor((now.getTime() - startedAt.getTime()) / 1000);
+    const unitPrice = s.pricePerKWh;
+    const totalAmount = (unitPrice != null && typeof kwh === 'number') ? Number((kwh * unitPrice).toFixed(2)) : undefined;
+    return {
+      started_at: startedAt.toISOString(),
+      duration_seconds: durationSeconds,
+      energy_kwh: typeof kwh === 'number' ? Number(kwh.toFixed(3)) : undefined,
+      power_kw: last.powerKW as any,
+      voltage_v: last.voltageV as any,
+      current_a: last.currentA as any,
+      soc_percent_at: last.batteryPercent as any,
+      temperature_c: last.temperatureC as any,
+      unit_price: unitPrice,
+      total_amount: totalAmount,
+      at: last.timestampUtc as any,
+    };
+  }
+
   /* ============================ Processamento de Telemetria ============================ */
 
   /**

@@ -1,5 +1,6 @@
 // src/services/repo.ts
 import { pg } from '../db';
+import { sb } from '../../supabase';
 
 type InsertEventoArgs = {
   tipo: string;
@@ -69,13 +70,48 @@ export async function insertEvento(args: InsertEventoArgs): Promise<{ duplicate:
     idTag,                   // $5
   ];
 
-  const r = await pg.query<{ id: number }>(sql, params);
-  const inserted = (r.rowCount ?? 0) > 0;
+  let inserted = false;
+  try {
+    const r = await pg.query<{ id: number }>(sql, params);
+    inserted = (r.rowCount ?? 0) > 0;
+    if (inserted) {
+      console.log(`[ingest] inserted id=${r.rows[0]?.id ?? '-'} key(log)=${uniqueKey}`);
+    } else {
+      console.warn(`[ingest] insert returned 0 rows (unexpected) key(log)=${uniqueKey}`);
+    }
+  } catch (e:any) {
+    console.warn('[repo.insertEvento] PG insert failed, fallback to Supabase:', e?.message || e);
+    if (sb) {
+      const ins = await sb.from('ocpp_events').insert({
+        event_type: tipo,
+        transaction_id: txId,
+        charge_box_id: chargeBoxId,
+        payload,
+        created_at: new Date().toISOString(),
+      }).select('id').single();
+      if (!ins.error) {
+        inserted = true;
+        console.log(`[ingest][sb] inserted id=${ins.data?.id ?? '-'} key(log)=${uniqueKey}`);
+      } else {
+        console.error('[repo.insertEvento] Supabase insert failed:', ins.error.message);
+      }
+    }
+  }
 
-  if (inserted) {
-    console.log(`[ingest] inserted id=${r.rows[0]?.id ?? '-'} key(log)=${uniqueKey}`);
-  } else {
-    console.warn(`[ingest] insert returned 0 rows (unexpected) key(log)=${uniqueKey}`);
+  // Best-effort: também inserir no Supabase para alimentar o RPC, mesmo com PG OK
+  if (sb) {
+    try {
+      const ins2 = await sb.from('ocpp_events').insert({
+        event_type: tipo,
+        transaction_id: txId,
+        charge_box_id: chargeBoxId,
+        payload,
+        created_at: new Date().toISOString(),
+      }).select('id').single();
+      if (!ins2.error) {
+        console.log(`[ingest][sb] mirrored id=${ins2.data?.id ?? '-'} key(log)=${uniqueKey}`);
+      }
+    } catch {}
   }
 
   // Sem índice único no banco, não dá para afirmar duplicidade pelo retorno do INSERT.
